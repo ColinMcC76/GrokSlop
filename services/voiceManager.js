@@ -8,6 +8,7 @@ const {
     entersState,
 } = require('@discordjs/voice');
 const fs = require('node:fs');
+const { removeGuild: removeYoutubeQueue } = require('./youtubeQueue');
 
 const connections = new Map();
 
@@ -38,6 +39,7 @@ function leaveChannel(guildId) {
     const data = connections.get(guildId);
     if (!data) return false;
 
+    removeYoutubeQueue(guildId);
     data.connection.destroy();
     connections.delete(guildId);
     return true;
