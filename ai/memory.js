@@ -1,14 +1,56 @@
 const db = require('../storage/db');
 const config = require('../config');
 
-function saveMessage(message) {
-    const stmt = db.prepare(`
-        INSERT OR REPLACE INTO messages (
-            id, guild_id, channel_id, user_id, username, content, is_bot, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+const insertMessage = db.prepare(`
+    INSERT OR REPLACE INTO messages (
+        id, guild_id, channel_id, user_id, username, content, is_bot, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`);
 
-    stmt.run(
+const selectRecentMessages = db.prepare(`
+    SELECT username, content, is_bot, created_at
+    FROM messages
+    WHERE channel_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+`);
+
+const selectGuildMemory = db.prepare(`
+    SELECT key, value, weight, updated_at
+    FROM guild_memory
+    WHERE guild_id = ?
+    ORDER BY weight DESC, updated_at DESC
+    LIMIT ?
+`);
+
+const selectUserMemory = db.prepare(`
+    SELECT key, value, weight, updated_at
+    FROM user_memory
+    WHERE guild_id = ? AND user_id = ?
+    ORDER BY weight DESC, updated_at DESC
+    LIMIT ?
+`);
+
+const upsertGuildMemoryStmt = db.prepare(`
+    INSERT INTO guild_memory (guild_id, key, value, weight, created_at, updated_at)
+    VALUES (@guildId, @key, @value, @weight, @now, @now)
+    ON CONFLICT(guild_id, key) DO UPDATE SET
+        value = excluded.value,
+        weight = excluded.weight,
+        updated_at = excluded.updated_at
+`);
+
+const upsertUserMemoryStmt = db.prepare(`
+    INSERT INTO user_memory (guild_id, user_id, key, value, weight, created_at, updated_at)
+    VALUES (@guildId, @userId, @key, @value, @weight, @now, @now)
+    ON CONFLICT(guild_id, user_id, key) DO UPDATE SET
+        value = excluded.value,
+        weight = excluded.weight,
+        updated_at = excluded.updated_at
+`);
+
+function saveMessage(message) {
+    insertMessage.run(
         message.id,
         message.guildId,
         message.channelId,
@@ -21,83 +63,25 @@ function saveMessage(message) {
 }
 
 function getRecentMessages(channelId, limit = config.recentMessageLimit) {
-    const stmt = db.prepare(`
-        SELECT username, content, is_bot, created_at
-        FROM messages
-        WHERE channel_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-    `);
-
-    return stmt.all(channelId, limit).reverse();
+    return selectRecentMessages.all(channelId, limit).reverse();
 }
 
 function getGuildMemory(guildId, limit = config.guildMemoryLimit) {
-    const stmt = db.prepare(`
-        SELECT key, value, weight, updated_at
-        FROM guild_memory
-        WHERE guild_id = ?
-        ORDER BY weight DESC, updated_at DESC
-        LIMIT ?
-    `);
-
-    return stmt.all(guildId, limit);
+    return selectGuildMemory.all(guildId, limit);
 }
 
 function getUserMemory(guildId, userId, limit = config.userMemoryLimit) {
-    const stmt = db.prepare(`
-        SELECT key, value, weight, updated_at
-        FROM user_memory
-        WHERE guild_id = ? AND user_id = ?
-        ORDER BY weight DESC, updated_at DESC
-        LIMIT ?
-    `);
-
-    return stmt.all(guildId, userId, limit);
+    return selectUserMemory.all(guildId, userId, limit);
 }
 
 function upsertGuildMemory(guildId, key, value, weight = 1) {
     const now = Date.now();
-
-    const existing = db.prepare(`
-        SELECT id FROM guild_memory
-        WHERE guild_id = ? AND key = ?
-    `).get(guildId, key);
-
-    if (existing) {
-        db.prepare(`
-            UPDATE guild_memory
-            SET value = ?, weight = ?, updated_at = ?
-            WHERE id = ?
-        `).run(value, weight, now, existing.id);
-    } else {
-        db.prepare(`
-            INSERT INTO guild_memory (guild_id, key, value, weight, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        `).run(guildId, key, value, weight, now, now);
-    }
+    upsertGuildMemoryStmt.run({ guildId, key, value, weight, now });
 }
 
 function upsertUserMemory(guildId, userId, key, value, weight = 1) {
     const now = Date.now();
-
-    const existing = db.prepare(`
-        SELECT id FROM user_memory
-        WHERE guild_id = ? AND user_id = ? AND key = ?
-    `).get(guildId, userId, key);
-
-    if (existing) {
-        db.prepare(`
-            UPDATE user_memory
-            SET value = ?, weight = ?, updated_at = ?
-            WHERE id = ?
-        `).run(value, weight, now, existing.id);
-    } else {
-        db.prepare(`
-            INSERT INTO user_memory (guild_id, user_id, key, value, weight, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(guildId, userId, key, value, weight, now, now);
-    }
+    upsertUserMemoryStmt.run({ guildId, userId, key, value, weight, now });
 }
 
 module.exports = {
