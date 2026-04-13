@@ -1,6 +1,5 @@
 const { EndBehaviorType, createAudioResource, StreamType } = require('@discordjs/voice');
 const prism = require('prism-media');
-const ffmpegPath = require('ffmpeg-static');
 const { PassThrough } = require('node:stream');
 const { RealtimeSession } = require('./realtimeSession');
 
@@ -20,40 +19,41 @@ function pcm48kStereoTo24kMono(buffer) {
     return Buffer.from(output.buffer, 0, outIndex * 2);
 }
 
+/**
+ * Realtime sends s16le PCM mono @ 24kHz. @discordjs/voice Raw → Opus expects 48kHz stereo s16le.
+ * Upsample with sample doubling (zero-order hold), then duplicate channels — no ffmpeg subprocess.
+ */
+function pcm24kMonoTo48kStereo(pcm24kMono) {
+    const nIn = pcm24kMono.length / 2;
+    if (nIn === 0) return Buffer.alloc(0);
+
+    const input = new Int16Array(pcm24kMono.buffer, pcm24kMono.byteOffset, nIn);
+    const stereoSamples = nIn * 2 * 2;
+    const out = new Int16Array(stereoSamples);
+    let w = 0;
+    for (let i = 0; i < nIn; i++) {
+        const s = input[i];
+        out[w++] = s;
+        out[w++] = s;
+        out[w++] = s;
+        out[w++] = s;
+    }
+    return Buffer.from(out.buffer, 0, w * 2);
+}
+
 const sessions = new Map();
 
 function createOutputPipeline(player) {
     const inputPcm24kMono = new PassThrough();
 
-    const upsampler = new prism.FFmpeg({
-        args: [
-            '-loglevel', process.env.RT_DEBUG === '1' ? 'info' : 'error',
-            '-f', 's16le',
-            '-ar', '24000',
-            '-ac', '1',
-            '-i', 'pipe:0',
-            '-f', 's16le',
-            '-ar', '48000',
-            '-ac', '2',
-            'pipe:1',
-        ],
-        shell: false,
-        command: ffmpegPath,
+    const toDiscord = new PassThrough();
+    inputPcm24kMono.on('data', (chunk) => {
+        toDiscord.write(pcm24kMonoTo48kStereo(chunk));
     });
+    inputPcm24kMono.on('end', () => toDiscord.end());
+    inputPcm24kMono.on('error', (err) => toDiscord.destroy(err));
 
-    upsampler.on('error', (err) => {
-        console.error('[RT OUTPUT UPSAMPLER ERROR]', err);
-    });
-
-    if (process.env.RT_DEBUG === '1' && upsampler.process?.stderr) {
-        upsampler.process.stderr.on('data', (buf) => {
-            console.error('[RT ffmpeg]', buf.toString().trim());
-        });
-    }
-
-    const upsampled = inputPcm24kMono.pipe(upsampler);
-
-    const resource = createAudioResource(upsampled, {
+    const resource = createAudioResource(toDiscord, {
         inputType: StreamType.Raw,
     });
 
@@ -103,7 +103,7 @@ async function startRealtimeForGuild({
         const buffer = Buffer.from(delta, 'base64');
         outputPcmBytesThisResponse += buffer.length;
         if (process.env.RT_DEBUG === '1') {
-            console.log('[RT] audio delta bytes:', buffer.length, 'total this response:', outputPcmBytesThisResponse);
+            console.log('[RT] audio delta bytes (24k mono):', buffer.length, 'total:', outputPcmBytesThisResponse);
         }
         try {
             outputStream.write(buffer);
@@ -114,6 +114,17 @@ async function startRealtimeForGuild({
 
     rt.on('audioDone', () => {
         console.log('[RT] output audio chunk done');
+    });
+
+    rt.on('assistantTranscript', async (text) => {
+        console.log('[RT] assistant said:', text.slice(0, 200) + (text.length > 200 ? '…' : ''));
+        if (!textChannel || !text?.trim()) return;
+        try {
+            const clip = text.length > 1800 ? `${text.slice(0, 1800)}…` : text;
+            await textChannel.send(`\u{1F916} **Grokslop:** ${clip}`);
+        } catch (err) {
+            console.error('Assistant transcript send failed:', err);
+        }
     });
 
     rt.on('transcript', async (text) => {
