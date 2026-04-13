@@ -2,10 +2,33 @@ const {
     createAudioResource,
     AudioPlayerStatus,
 } = require('@discordjs/voice');
-const play = require('play-dl');
 
 /** @type {Map<string, GuildQueueState>} */
 const queues = new Map();
+
+function getPlayDl() {
+    try {
+        return require('play-dl');
+    } catch (e) {
+        if (e && e.code === 'MODULE_NOT_FOUND') {
+            const err = new Error(
+                'The **play-dl** package is missing. Open a terminal in your bot folder and run: `npm install` (then start the bot again).'
+            );
+            err.code = 'PLAY_DL_MISSING';
+            throw err;
+        }
+        throw e;
+    }
+}
+
+function isPlayDlInstalled() {
+    try {
+        require.resolve('play-dl');
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 /**
  * @typedef {{ url: string, title: string | null }} QueueItem
@@ -86,6 +109,7 @@ function waitUntilIdle(player, gen, state) {
  * @returns {Promise<QueueItem[]>}
  */
 async function resolveToQueueItems(query) {
+    const play = getPlayDl();
     const q = query.trim();
     if (!q) {
         throw new Error('Empty query.');
@@ -128,6 +152,7 @@ async function playCurrentTrack(state) {
     }
 
     const gen = state.generation;
+    const play = getPlayDl();
 
     try {
         const ytStream = await play.stream(item.url, {
@@ -276,4 +301,5 @@ module.exports = {
     removeGuild,
     queueLength,
     ensurePlaying,
+    isPlayDlInstalled,
 };
