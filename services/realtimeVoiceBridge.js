@@ -27,7 +27,7 @@ function createOutputPipeline(player) {
 
     const upsampler = new prism.FFmpeg({
         args: [
-            '-loglevel', '0',
+            '-loglevel', process.env.RT_DEBUG === '1' ? 'info' : 'error',
             '-f', 's16le',
             '-ar', '24000',
             '-ac', '1',
@@ -44,6 +44,12 @@ function createOutputPipeline(player) {
     upsampler.on('error', (err) => {
         console.error('[RT OUTPUT UPSAMPLER ERROR]', err);
     });
+
+    if (process.env.RT_DEBUG === '1' && upsampler.process?.stderr) {
+        upsampler.process.stderr.on('data', (buf) => {
+            console.error('[RT ffmpeg]', buf.toString().trim());
+        });
+    }
 
     const upsampled = inputPcm24kMono.pipe(upsampler);
 
@@ -81,9 +87,14 @@ async function startRealtimeForGuild({
 
     let responseInProgress = false;
     let captureInProgress = false;
+    let outputPcmBytesThisResponse = 0;
 
     rt.on('audioDelta', (delta) => {
         const buffer = Buffer.from(delta, 'base64');
+        outputPcmBytesThisResponse += buffer.length;
+        if (process.env.RT_DEBUG === '1') {
+            console.log('[RT] audio delta bytes:', buffer.length, 'total this response:', outputPcmBytesThisResponse);
+        }
         try {
             outputStream.write(buffer);
         } catch (err) {
@@ -108,6 +119,7 @@ async function startRealtimeForGuild({
 
     rt.on('responseCreated', () => {
         responseInProgress = true;
+        outputPcmBytesThisResponse = 0;
         console.log('[RT] response started');
     });
 
@@ -115,6 +127,14 @@ async function startRealtimeForGuild({
         responseInProgress = false;
         const status = event?.response?.status;
         console.log('[RT] response done', status ? `(status: ${status})` : '');
+        if (outputPcmBytesThisResponse === 0 && status === 'completed') {
+            console.warn(
+                '[RT] completed response had 0 bytes of streamed audio. ' +
+                    'Set RT_DEBUG=1 and check session.updated output_modalities / response.created. ' +
+                    'If still empty, verify OPENAI_REALTIME_MODEL supports speech output.'
+            );
+        }
+        outputPcmBytesThisResponse = 0;
     });
 
     rt.on('error', (err) => {
