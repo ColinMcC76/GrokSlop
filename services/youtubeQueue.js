@@ -45,6 +45,68 @@ function isPlayDlInstalled() {
 const MAX_PLAYLIST_TRACKS = 25;
 const IDLE_WAIT_MS = 3_600_000;
 
+/**
+ * youtu.be and watch?v=…&list=… should play as a single video with a canonical URL.
+ */
+function normalizeYouTubeInput(raw) {
+    const q = raw.trim();
+    if (!q || !/^https?:\/\//i.test(q)) {
+        return q;
+    }
+    try {
+        const u = new URL(q);
+        const host = u.hostname.replace(/^www\./, '');
+        if (host === 'youtu.be') {
+            const id = u.pathname.split('/').filter(Boolean)[0];
+            if (id && /^[\w-]{11}$/.test(id)) {
+                return `https://www.youtube.com/watch?v=${id}`;
+            }
+        }
+        if (
+            host === 'youtube.com' ||
+            host === 'm.youtube.com' ||
+            host === 'music.youtube.com'
+        ) {
+            const v = u.searchParams.get('v');
+            if (v && /^[\w-]{11}$/.test(v)) {
+                return `https://www.youtube.com/watch?v=${v}`;
+            }
+        }
+    } catch {
+        /* keep original */
+    }
+    return q;
+}
+
+/**
+ * play.stream(url) can hit stream_from_info with a format missing .url (undeciphered).
+ * video_info runs full decipher; stream_from_info uses that.
+ */
+async function createYoutubeStream(play, url) {
+    const attempts = [
+        async () =>
+            play.stream_from_info(await play.video_info(url), {
+                discordPlayerCompatibility: true,
+            }),
+        async () => play.stream(url, { discordPlayerCompatibility: true }),
+        async () =>
+            play.stream_from_info(await play.video_info(url), {
+                discordPlayerCompatibility: false,
+            }),
+        async () => play.stream(url, { discordPlayerCompatibility: false }),
+    ];
+
+    let lastErr;
+    for (const run of attempts) {
+        try {
+            return await run();
+        } catch (e) {
+            lastErr = e;
+        }
+    }
+    throw lastErr;
+}
+
 function getOrCreateState(guildId, player) {
     let s = queues.get(guildId);
     if (!s) {
@@ -115,17 +177,18 @@ async function resolveToQueueItems(query) {
         throw new Error('Empty query.');
     }
 
-    const validated = await play.validate(q).catch(() => false);
+    const normalized = normalizeYouTubeInput(q);
+    const validated = await play.validate(normalized).catch(() => false);
     const v = typeof validated === 'string' ? validated : '';
 
     if (v === 'yt_video') {
-        const info = await play.video_basic_info(q);
+        const info = await play.video_basic_info(normalized);
         const title = info.video_details?.title || 'YouTube';
-        return [{ url: q, title }];
+        return [{ url: normalized, title }];
     }
 
     if (v === 'yt_playlist') {
-        const pl = await play.playlist_info(q, { incomplete: true });
+        const pl = await play.playlist_info(normalized, { incomplete: true });
         await pl.fetch();
         const videos = await pl.all_videos();
         return videos.slice(0, MAX_PLAYLIST_TRACKS).map((vid) => ({
@@ -134,7 +197,7 @@ async function resolveToQueueItems(query) {
         }));
     }
 
-    const results = await play.search(q, {
+    const results = await play.search(normalized, {
         limit: 1,
         source: { youtube: 'video' },
     });
@@ -155,9 +218,7 @@ async function playCurrentTrack(state) {
     const play = getPlayDl();
 
     try {
-        const ytStream = await play.stream(item.url, {
-            discordPlayerCompatibility: true,
-        });
+        const ytStream = await createYoutubeStream(play, item.url);
 
         const resource = createAudioResource(ytStream.stream, {
             inputType: ytStream.type,
