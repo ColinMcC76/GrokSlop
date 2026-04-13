@@ -9,6 +9,7 @@ class RealtimeSession extends EventEmitter {
         this.voice = voice;
         this.model = model;
         this.ws = null;
+        this._assistantTranscript = '';
     }
 
     async connect() {
@@ -74,7 +75,20 @@ class RealtimeSession extends EventEmitter {
                 this.emit('audioDone');
             }
 
+            if (event.type === 'response.output_audio_transcript.delta' && event.delta) {
+                this._assistantTranscript += event.delta;
+            }
+
+            if (event.type === 'response.output_audio_transcript.done') {
+                const text = event.transcript?.trim() || this._assistantTranscript.trim();
+                this._assistantTranscript = '';
+                if (text) {
+                    this.emit('assistantTranscript', text);
+                }
+            }
+
             if (event.type === 'response.created') {
+                this._assistantTranscript = '';
                 if (debug) {
                     console.log(
                         '[RT] response.created modalities:',
