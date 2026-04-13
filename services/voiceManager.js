@@ -6,16 +6,56 @@ const {
     AudioPlayerStatus,
     VoiceConnectionStatus,
     entersState,
+    getVoiceConnection,
 } = require('@discordjs/voice');
 const fs = require('node:fs');
 const { removeGuild: removeYoutubeQueue } = require('./youtubeQueue');
 
 const connections = new Map();
 
+/** Voice handshake can exceed Discord's 3s interaction window; allow generous timeout. */
+const VOICE_READY_MS = 45_000;
+
 async function joinChannel(voiceChannel) {
-    const connection = joinVoiceChannel({
+    const guildId = voiceChannel.guild.id;
+
+    const existing = connections.get(guildId);
+    if (existing) {
+        const { connection, player } = existing;
+        if (connection.joinConfig.channelId !== voiceChannel.id) {
+            connection.rejoin({
+                channelId: voiceChannel.id,
+                selfDeaf: false,
+                selfMute: false,
+            });
+        }
+        await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_MS);
+        return { connection, player };
+    }
+
+    let connection = getVoiceConnection(guildId);
+    if (connection) {
+        if (connection.joinConfig.channelId !== voiceChannel.id) {
+            connection.rejoin({
+                channelId: voiceChannel.id,
+                selfDeaf: false,
+                selfMute: false,
+            });
+        }
+        const player = createAudioPlayer({
+            behaviors: {
+                noSubscriber: NoSubscriberBehavior.Pause,
+            },
+        });
+        connection.subscribe(player);
+        await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_MS);
+        connections.set(guildId, { connection, player });
+        return { connection, player };
+    }
+
+    connection = joinVoiceChannel({
         channelId: voiceChannel.id,
-        guildId: voiceChannel.guild.id,
+        guildId,
         adapterCreator: voiceChannel.guild.voiceAdapterCreator,
         selfDeaf: false,
         selfMute: false,
@@ -29,9 +69,9 @@ async function joinChannel(voiceChannel) {
 
     connection.subscribe(player);
 
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+    await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_MS);
 
-    connections.set(voiceChannel.guild.id, { connection, player });
+    connections.set(guildId, { connection, player });
     return { connection, player };
 }
 
