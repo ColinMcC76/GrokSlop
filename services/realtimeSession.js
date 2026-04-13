@@ -35,15 +35,25 @@ class RealtimeSession extends EventEmitter {
                 return;
             }
 
+            const debug = process.env.RT_DEBUG === '1';
+
             if (event.type === 'session.created') {
                 console.log('[RT] session created');
             }
 
             if (event.type === 'session.updated') {
                 console.log('[RT] session updated');
+                if (debug) {
+                    console.log(
+                        '[RT] effective output_modalities:',
+                        event.session?.output_modalities,
+                        'audio.output:',
+                        JSON.stringify(event.session?.audio?.output)
+                    );
+                }
             }
 
-            // Current Realtime API uses response.output_audio.* (see openai realtime.d.ts).
+            // Streamed output audio (primary path).
             const audioDelta =
                 (event.type === 'response.output_audio.delta' && event.delta) ||
                 (event.type === 'response.audio.delta' && event.delta);
@@ -58,11 +68,32 @@ class RealtimeSession extends EventEmitter {
                 this.emit('audioDone');
             }
 
+            // Some sessions deliver assistant audio on content_part.done instead of deltas.
+            if (event.type === 'response.content_part.done' && event.part?.type === 'audio' && event.part.audio) {
+                this.emit('audioDelta', event.part.audio);
+                this.emit('audioDone');
+            }
+
             if (event.type === 'response.created') {
+                if (debug) {
+                    console.log(
+                        '[RT] response.created modalities:',
+                        event.response?.output_modalities
+                    );
+                }
                 this.emit('responseCreated', event);
             }
 
             if (event.type === 'response.done') {
+                const mods = event.response?.output_modalities;
+                if (mods && !mods.includes('audio')) {
+                    console.warn(
+                        '[RT] response completed without audio modality; got:',
+                        mods,
+                        'status:',
+                        event.response?.status
+                    );
+                }
                 this.emit('responseDone', event);
             }
 
@@ -78,6 +109,7 @@ class RealtimeSession extends EventEmitter {
             }
         });
 
+        // Shape matches OpenAI Realtime TypeScript types (RealtimeSessionCreateRequest).
         this.send({
             type: 'session.update',
             session: {
@@ -86,21 +118,14 @@ class RealtimeSession extends EventEmitter {
                 output_modalities: ['audio'],
                 audio: {
                     input: {
-                        format: {
-                            type: 'audio/pcm',
-                            rate: 24000
-                        },
-                        // Discord segments audio with its own VAD; we commit + response.create per segment.
+                        format: { type: 'audio/pcm', rate: 24000 },
                         turn_detection: null,
                         transcription: {
                             model: 'gpt-4o-mini-transcribe'
                         }
                     },
                     output: {
-                        format: {
-                            type: 'audio/pcm',
-                            rate: 24000
-                        },
+                        format: { type: 'audio/pcm', rate: 24000 },
                         voice: this.voice
                     }
                 }
@@ -120,7 +145,19 @@ class RealtimeSession extends EventEmitter {
     }
 
     createResponse() {
-        this.send({ type: 'response.create' });
+        // Per-turn hint: empty create() can occasionally yield non-audio responses depending on server defaults.
+        this.send({
+            type: 'response.create',
+            response: {
+                output_modalities: ['audio'],
+                audio: {
+                    output: {
+                        format: { type: 'audio/pcm', rate: 24000 },
+                        voice: this.voice
+                    }
+                }
+            }
+        });
     }
 
     cancelResponse() {
