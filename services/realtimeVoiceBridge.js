@@ -155,9 +155,10 @@ async function sendLongMessage(channel, text, prefix) {
 
 async function startRealtimeForGuild({
     guildId,
+    guild,
     connection,
     player,
-    userId,
+    allowedSpeakerIds,
     textChannel,
     instructions,
 }) {
@@ -204,7 +205,8 @@ async function startRealtimeForGuild({
     }
 
     let responseInProgress = false;
-    let captureInProgress = false;
+    /** @type {Map<string, boolean>} */
+    const captureByUser = new Map();
     let outputPcmBytesThisResponse = 0;
     let loggedFirstPcmThisResponse = false;
 
@@ -241,7 +243,15 @@ async function startRealtimeForGuild({
         if (!textChannel || !text?.trim() || tearingDown) return;
 
         try {
-            await sendLongMessage(textChannel, text, PREFIX_USER);
+            const sourceUserId = transcriptSourceQueue.shift();
+            const who =
+                isGroupListen && sourceUserId
+                    ? await speakerDisplayName(sourceUserId)
+                    : null;
+            const prefix = who
+                ? `\u{1F5E3}\uFE0F **${who}:** `
+                : PREFIX_USER;
+            await sendLongMessage(textChannel, text, prefix);
         } catch (err) {
             console.error('Transcript send failed:', err);
         }
@@ -282,9 +292,43 @@ async function startRealtimeForGuild({
     });
 
     const receiver = connection.receiver;
+    const botUserId = guild?.client?.user?.id ?? null;
+
+    const isGroupListen = allowedSpeakerIds == null;
+    /** FIFO: one entry per committed audio segment, consumed when input transcript arrives */
+    const transcriptSourceQueue = [];
+
+    const speakerNameCache = new Map();
+    async function speakerDisplayName(userId) {
+        if (!guild || !userId) return 'Someone';
+        if (speakerNameCache.has(userId)) {
+            return speakerNameCache.get(userId);
+        }
+        try {
+            const m = await guild.members.fetch(userId);
+            const n = m.displayName || m.user?.username || 'Someone';
+            speakerNameCache.set(userId, n);
+            return n;
+        } catch {
+            speakerNameCache.set(userId, 'Someone');
+            return 'Someone';
+        }
+    }
+
+    function shouldCaptureUser(speakingUserId) {
+        if (tearingDown) return false;
+        if (!speakingUserId) return false;
+        if (botUserId && speakingUserId === botUserId) {
+            return false;
+        }
+        if (isGroupListen) {
+            return true;
+        }
+        return allowedSpeakerIds.has(speakingUserId);
+    }
 
     const handleSpeakingStart = (speakingUserId) => {
-        if (speakingUserId !== userId || tearingDown) return;
+        if (!shouldCaptureUser(speakingUserId)) return;
 
         if (responseInProgress) {
             console.log('[RT] user spoke during playback; stopping assistant audio');
@@ -293,13 +337,13 @@ async function startRealtimeForGuild({
             responseInProgress = false;
         }
 
-        if (captureInProgress) {
-            console.log('[RT] ignoring speech because capture is already in progress');
+        if (captureByUser.get(speakingUserId)) {
+            console.log('[RT] ignoring speech; capture already in progress for user:', speakingUserId);
             return;
         }
 
-        captureInProgress = true;
-        console.log('[RT] detected speaking start for target user:', speakingUserId);
+        captureByUser.set(speakingUserId, true);
+        console.log('[RT] detected speaking start for user:', speakingUserId);
 
         const opusStream = receiver.subscribe(speakingUserId, {
             end: {
@@ -323,7 +367,7 @@ async function startRealtimeForGuild({
         });
 
         decoder.on('end', () => {
-            captureInProgress = false;
+            captureByUser.delete(speakingUserId);
 
             const minBytesFor100ms = 4800;
 
@@ -334,6 +378,9 @@ async function startRealtimeForGuild({
             }
 
             console.log('[RT] committed audio segment, total bytes:', appendedBytes);
+            if (isGroupListen) {
+                transcriptSourceQueue.push(speakingUserId);
+            }
             rt.commitAudio();
             if (!responseInProgress && !tearingDown) {
                 rt.createResponse();
@@ -341,12 +388,12 @@ async function startRealtimeForGuild({
         });
 
         decoder.on('error', (err) => {
-            captureInProgress = false;
+            captureByUser.delete(speakingUserId);
             console.error('[RT DECODER ERROR]', err);
         });
 
         opusStream.on('error', (err) => {
-            captureInProgress = false;
+            captureByUser.delete(speakingUserId);
             console.error('[RT OPUS STREAM ERROR]', err);
         });
 
@@ -362,7 +409,7 @@ async function startRealtimeForGuild({
         get outputStream() {
             return outputStream;
         },
-        userId,
+        allowedSpeakerIds: isGroupListen ? null : allowedSpeakerIds,
         textChannelId: textChannel?.id ?? null,
         handleSpeakingStart,
         receiver,

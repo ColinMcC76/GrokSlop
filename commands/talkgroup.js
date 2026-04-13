@@ -4,8 +4,8 @@ const { startRealtimeForGuild, isRealtimeActive } = require('../services/realtim
 
 module.exports = {
     data: new SlashCommandBuilder()
-        .setName('talkon')
-        .setDescription('Start realtime voice chat with Grokslop in your VC'),
+        .setName('talkgroup')
+        .setDescription('Realtime voice: listen to everyone in the VC (not just you)'),
     async execute(interaction) {
         const member = await interaction.guild.members.fetch(interaction.user.id);
         const voiceChannel = member.voice.channel;
@@ -20,7 +20,7 @@ module.exports = {
 
         if (isRealtimeActive(interaction.guild.id)) {
             await interaction.reply({
-                content: 'Realtime voice is already active in this server.',
+                content: 'Realtime voice is already active. Use /talkoff first, then /talkgroup or /talkon.',
                 flags: MessageFlags.Ephemeral,
             });
             return;
@@ -38,17 +38,21 @@ module.exports = {
             guild: interaction.guild,
             connection: connectionData.connection,
             player: connectionData.player,
-            allowedSpeakerIds: new Set([interaction.user.id]),
+            allowedSpeakerIds: null,
             textChannel: interaction.channel,
             instructions: `
-You are Grokslop in a Discord voice chat.
-Be helpful, natural, and conversational.
-Default to concise replies; if the user asks for a scene, story, or roleplay, you may speak longer and finish the beat—do not stop mid-sentence.
+You are Grokslop in a Discord voice chat with multiple people.
+You hear a mix of speakers; transcripts may be labeled with a name—use that to tell people apart when it helps.
+Be helpful, natural, and conversational. Default to concise replies.
+If someone asks for a scene, story, or roleplay, you may speak longer and finish the beat.
 You are a little funny and chaotic, but still useful.
-When the user talks over you, they want the floor—keep your next reply short.
+When someone talks over you, they want the floor—keep your next reply short.
+If several people spoke in one clip, acknowledge the group or the clearest request.
 `,
         });
 
-        await interaction.editReply(`🎙️ Realtime voice mode is on in **${voiceChannel.name}**. I am listening to **${interaction.user.username}**.`);
+        await interaction.editReply(
+            `🎙️ **Group mode** in **${voiceChannel.name}** — I am listening to **everyone** in this channel (not the bot).`
+        );
     },
 };

@@ -115,9 +115,15 @@ async function createYoutubeStream(play, url) {
  */
 function streamYoutubeViaYtdlp(url) {
     const bin = process.env.YT_DLP_PATH || 'yt-dlp';
+    // Prefer higher-bitrate audio-only; override with YT_DLP_FORMAT if needed.
+    const format =
+        process.env.YT_DLP_FORMAT ||
+        'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best/ba/b';
     const args = [
         '-f',
-        'bestaudio/best',
+        format,
+        '-S',
+        '-abr,-asr',
         '-o',
         '-',
         '--no-playlist',
