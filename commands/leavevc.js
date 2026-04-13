@@ -1,11 +1,13 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { leaveChannel } = require('../services/voiceManager');
+const { stopRealtimeForGuild } = require('../services/realtimeVoiceBridge');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('leavevc')
         .setDescription('Leave the current voice channel'),
     async execute(interaction) {
+        stopRealtimeForGuild(interaction.guild.id);
         const left = leaveChannel(interaction.guild.id);
 
         if (!left) {
