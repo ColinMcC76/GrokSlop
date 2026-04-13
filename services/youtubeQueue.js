@@ -1,6 +1,8 @@
+const { spawn } = require('node:child_process');
 const {
     createAudioResource,
     AudioPlayerStatus,
+    StreamType,
 } = require('@discordjs/voice');
 
 /** @type {Map<string, GuildQueueState>} */
@@ -107,6 +109,114 @@ async function createYoutubeStream(play, url) {
     throw lastErr;
 }
 
+/**
+ * YouTube breaks unofficial parsers often; yt-dlp is the reliable path (install separately).
+ * @returns {Promise<{ stream: import('node:stream').Readable, child: import('node:child_process').ChildProcess }>}
+ */
+function streamYoutubeViaYtdlp(url) {
+    const bin = process.env.YT_DLP_PATH || 'yt-dlp';
+    const args = [
+        '-f',
+        'bestaudio/best',
+        '-o',
+        '-',
+        '--no-playlist',
+        '--quiet',
+        '--no-progress',
+        '--no-warnings',
+        url,
+    ];
+
+    return new Promise((resolve, reject) => {
+        const child = spawn(bin, args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+        });
+
+        const stderrChunks = [];
+        child.stderr.on('data', (chunk) => {
+            stderrChunks.push(chunk);
+        });
+
+        let settled = false;
+        const hangMs = 25_000;
+        let hangTimer;
+
+        const fail = (err) => {
+            if (settled) return;
+            settled = true;
+            if (hangTimer) {
+                clearTimeout(hangTimer);
+            }
+            try {
+                child.kill('SIGKILL');
+            } catch {}
+            reject(err);
+        };
+
+        hangTimer = setTimeout(() => {
+            const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
+            fail(
+                new Error(
+                    `yt-dlp timed out after ${hangMs / 1000}s${errText ? `: ${errText.slice(0, 400)}` : ''}`
+                )
+            );
+        }, hangMs);
+        if (typeof hangTimer.unref === 'function') {
+            hangTimer.unref();
+        }
+
+        child.on('error', (err) => {
+            if (err.code === 'ENOENT') {
+                err.message =
+                    'yt-dlp is not installed or not on PATH. Install: https://github.com/yt-dlp/yt-dlp#installation — or set YT_DLP_PATH to the executable.';
+            }
+            fail(err);
+        });
+
+        const onFirstByte = () => {
+            if (settled) return;
+            settled = true;
+            if (hangTimer) {
+                clearTimeout(hangTimer);
+            }
+            resolve({ stream: child.stdout, child });
+        };
+
+        child.stdout.once('data', onFirstByte);
+
+        child.on('close', (code, signal) => {
+            if (settled) return;
+            const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
+            if (code !== 0 && code !== null) {
+                fail(
+                    new Error(
+                        `yt-dlp exited with code ${code}${signal ? ` (${signal})` : ''}${errText ? `: ${errText.slice(0, 500)}` : ''}`
+                    )
+                );
+                return;
+            }
+            if (code === 0 && !signal) {
+                fail(
+                    new Error(
+                        errText
+                            ? `yt-dlp produced no audio: ${errText.slice(0, 500)}`
+                            : 'yt-dlp produced no audio output.'
+                    )
+                );
+            }
+        });
+    });
+}
+
+function killYtdlpChild(state) {
+    if (!state.ytdlpChild) return;
+    try {
+        state.ytdlpChild.kill('SIGKILL');
+    } catch {}
+    state.ytdlpChild = null;
+}
+
 function getOrCreateState(guildId, player) {
     let s = queues.get(guildId);
     if (!s) {
@@ -125,6 +235,7 @@ function getOrCreateState(guildId, player) {
             generation: 0,
             drainChain: Promise.resolve(),
             onPlayerError,
+            ytdlpChild: null,
         };
         queues.set(guildId, s);
     }
@@ -215,19 +326,36 @@ async function playCurrentTrack(state) {
     }
 
     const gen = state.generation;
-    const play = getPlayDl();
+    killYtdlpChild(state);
 
     try {
-        const ytStream = await createYoutubeStream(play, item.url);
-
-        const resource = createAudioResource(ytStream.stream, {
-            inputType: ytStream.type,
-            metadata: { title: item.title, url: item.url },
-        });
+        let resource;
 
         try {
-            play.attachListeners(state.player, ytStream);
-        } catch {}
+            const { stream, child } = await streamYoutubeViaYtdlp(item.url);
+            state.ytdlpChild = child;
+            child.on('close', () => {
+                if (state.ytdlpChild === child) {
+                    state.ytdlpChild = null;
+                }
+            });
+            resource = createAudioResource(stream, {
+                inputType: StreamType.Arbitrary,
+                metadata: { title: item.title, url: item.url },
+            });
+            console.log('[YouTube queue] streaming via yt-dlp');
+        } catch (ytdlpErr) {
+            console.warn('[YouTube queue] yt-dlp failed, trying play-dl:', ytdlpErr.message || ytdlpErr);
+            const play = getPlayDl();
+            const ytStream = await createYoutubeStream(play, item.url);
+            resource = createAudioResource(ytStream.stream, {
+                inputType: ytStream.type,
+                metadata: { title: item.title, url: item.url },
+            });
+            try {
+                play.attachListeners(state.player, ytStream);
+            } catch {}
+        }
 
         state.player.play(resource);
 
@@ -245,12 +373,14 @@ async function playCurrentTrack(state) {
             return;
         }
 
+        killYtdlpChild(state);
         state.items.shift();
         await playNextFromQueue(state);
     } catch (err) {
         if (state.generation !== gen) {
             return;
         }
+        killYtdlpChild(state);
         console.error('[YouTube queue] Playback failed:', err);
         if (state.textChannel) {
             try {
@@ -314,6 +444,7 @@ function skip(guildId) {
         return false;
     }
     state.generation += 1;
+    killYtdlpChild(state);
     try {
         state.player.stop(true);
     } catch {}
@@ -328,6 +459,7 @@ function stopAndClear(guildId) {
         return false;
     }
     state.generation += 1;
+    killYtdlpChild(state);
     state.items.length = 0;
     try {
         state.player.stop(true);
@@ -341,6 +473,7 @@ function removeGuild(guildId) {
         return;
     }
     state.generation += 1;
+    killYtdlpChild(state);
     state.items.length = 0;
     try {
         state.player.off('error', state.onPlayerError);
