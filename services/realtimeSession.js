@@ -164,10 +164,6 @@ class RealtimeSession extends EventEmitter {
         this.send({ type: 'response.cancel' });
     }
 
-    clearOutputAudioBuffer() {
-        this.send({ type: 'output_audio_buffer.clear' });
-    }
-
     clearInputBuffer() {
         this.send({ type: 'input_audio_buffer.clear' });
     }

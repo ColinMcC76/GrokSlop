@@ -83,7 +83,17 @@ async function startRealtimeForGuild({
 
     await rt.connect();
 
-    const outputStream = createOutputPipeline(player);
+    let outputStream = createOutputPipeline(player);
+
+    function flushLocalPlayback() {
+        try {
+            player.stop(true);
+        } catch {}
+        try {
+            outputStream.destroy();
+        } catch {}
+        outputStream = createOutputPipeline(player);
+    }
 
     let responseInProgress = false;
     let captureInProgress = false;
@@ -149,7 +159,8 @@ async function startRealtimeForGuild({
         if (responseInProgress) {
             console.log('[RT] user spoke during playback; cancelling response');
             rt.cancelResponse();
-            rt.clearOutputAudioBuffer();
+            // output_audio_buffer.clear is WebRTC-only; not valid on the Realtime WebSocket API.
+            flushLocalPlayback();
             responseInProgress = false;
         }
 
@@ -217,7 +228,9 @@ async function startRealtimeForGuild({
 
     sessions.set(guildId, {
         rt,
-        outputStream,
+        get outputStream() {
+            return outputStream;
+        },
         userId,
         textChannelId: textChannel?.id ?? null,
         handleSpeakingStart,
