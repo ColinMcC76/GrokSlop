@@ -1,7 +1,6 @@
 const { EndBehaviorType, createAudioResource, StreamType } = require('@discordjs/voice');
 const prism = require('prism-media');
 const { Transform } = require('node:stream');
-const { once } = require('node:events');
 const { RealtimeSession } = require('./realtimeSession');
 
 function pcm48kStereoTo24kMono(buffer) {
@@ -56,6 +55,9 @@ function createOutputPipeline(player) {
     });
 
     upsampler.on('error', (err) => {
+        if (err && err.code === 'ERR_STREAM_PREMATURE_CLOSE') {
+            return;
+        }
         console.error('[RT PCM upsampler]', err);
     });
 
@@ -68,9 +70,30 @@ function createOutputPipeline(player) {
     return upsampler;
 }
 
+function waitForWritableRoom(stream) {
+    return new Promise((resolve) => {
+        if (stream.destroyed || stream.writableEnded) {
+            resolve();
+            return;
+        }
+        const finish = () => {
+            stream.off('drain', onDrain);
+            stream.off('close', onClose);
+            stream.off('error', onError);
+            resolve();
+        };
+        const onDrain = () => finish();
+        const onClose = () => finish();
+        const onError = () => finish();
+        stream.once('drain', onDrain);
+        stream.once('close', onClose);
+        stream.once('error', onError);
+    });
+}
+
 /**
  * Writable backpressure: without awaiting drain, chunks can be dropped and VC stays silent
- * even when transcripts arrive.
+ * even when transcripts arrive. Do not use Promise.race(once(...)) — it leaks listeners.
  */
 function queuePcmWrite(stream, buf, chainRef) {
     chainRef.current = chainRef.current.then(async () => {
@@ -78,11 +101,7 @@ function queuePcmWrite(stream, buf, chainRef) {
         try {
             const ok = stream.write(buf);
             if (!ok && !stream.destroyed) {
-                await Promise.race([
-                    once(stream, 'drain'),
-                    once(stream, 'close'),
-                    once(stream, 'error'),
-                ]);
+                await waitForWritableRoom(stream);
             }
         } catch (e) {
             if (!stream.destroyed) {
@@ -175,7 +194,15 @@ async function startRealtimeForGuild({
         responseInProgress = true;
         outputPcmBytesThisResponse = 0;
         loggedFirstPcmThisResponse = false;
-        console.log('[RT] response started');
+        pcmWriteChain.current = Promise.resolve();
+        try {
+            player.stop(true);
+        } catch {}
+        try {
+            outputStream.destroy();
+        } catch {}
+        outputStream = createOutputPipeline(player);
+        console.log('[RT] response started (fresh Discord audio pipeline)');
     });
 
     rt.on('responseDone', (event) => {
