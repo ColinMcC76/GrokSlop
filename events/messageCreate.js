@@ -5,6 +5,7 @@ const { generateResponse } = require('../ai/router');
 const { extractAttachments } = require('../utils/attachmentReader');
 const { isCoolingDown, startCooldown } = require('../utils/cooldowns');
 const { needsWebSearch } = require('../ai/needsWebSearch');
+const { splitDiscordContent } = require('../utils/discordChunks');
 
 function shouldRespond(message, clientUserId) {
     if (message.author.bot) return false;
@@ -73,18 +74,39 @@ module.exports = {
                 ? result
                 : (result.text || 'I had a thought and then it escaped.');
 
-            const sent = await message.reply(replyText.slice(0, 1900));
-            
+            const chunks = splitDiscordContent(replyText);
+            if (chunks.length === 0) {
+                return;
+            }
+
+            const first = await message.reply(chunks[0]);
             saveMessage({
-                id: sent.id,
-                guildId: sent.guild.id,
-                channelId: sent.channel.id,
-                userId: sent.author.id,
-                username: sent.author.username,
-                content: sent.content || '',
+                id: first.id,
+                guildId: first.guild.id,
+                channelId: first.channel.id,
+                userId: first.author.id,
+                username: first.author.username,
+                content: first.content || '',
                 isBot: true,
-                createdAt: sent.createdTimestamp
+                createdAt: first.createdTimestamp
             });
+
+            for (let c = 1; c < chunks.length; c++) {
+                const body = chunks[c];
+                const follow = await message.channel.send(
+                    body.startsWith('*(continued)*') ? body : `*(continued)*\n${body}`
+                );
+                saveMessage({
+                    id: follow.id,
+                    guildId: follow.guild.id,
+                    channelId: follow.channel.id,
+                    userId: follow.author.id,
+                    username: follow.author.username,
+                    content: follow.content || '',
+                    isBot: true,
+                    createdAt: follow.createdTimestamp
+                });
+            }
         } catch (error) {
             console.error('messageCreate handler failed:', error);
             await message.reply('I tried to think but the wires crossed.');
