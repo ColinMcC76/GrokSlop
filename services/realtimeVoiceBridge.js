@@ -7,6 +7,7 @@ const {
 const prism = require('prism-media');
 const { Transform } = require('node:stream');
 const { RealtimeSession } = require('./realtimeSession');
+const { ensurePlaying } = require('./youtubeQueue');
 
 const DISCORD_MSG_MAX = 1900;
 const PREFIX_ASSISTANT = '\u{1F916} **Grokslop:** ';
@@ -409,6 +410,7 @@ async function stopRealtimeForGuild(guildId) {
     } catch {}
 
     sessions.delete(guildId);
+    ensurePlaying(guildId);
     return true;
 }
 
