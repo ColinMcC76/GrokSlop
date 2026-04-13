@@ -27,7 +27,13 @@ class RealtimeSession extends EventEmitter {
         });
 
         this.ws.on('message', (raw) => {
-            const event = JSON.parse(raw.toString());
+            let event;
+            try {
+                event = JSON.parse(raw.toString());
+            } catch (e) {
+                console.error('[RT] invalid JSON from server', e);
+                return;
+            }
 
             if (event.type === 'session.created') {
                 console.log('[RT] session created');
@@ -37,16 +43,33 @@ class RealtimeSession extends EventEmitter {
                 console.log('[RT] session updated');
             }
 
-            if (event.type === 'response.audio.delta' && event.delta) {
-                this.emit('audioDelta', event.delta);
+            // Current Realtime API uses response.output_audio.* (see openai realtime.d.ts).
+            const audioDelta =
+                (event.type === 'response.output_audio.delta' && event.delta) ||
+                (event.type === 'response.audio.delta' && event.delta);
+            if (audioDelta) {
+                this.emit('audioDelta', audioDelta);
             }
 
-            if (event.type === 'response.audio.done') {
+            if (
+                event.type === 'response.output_audio.done' ||
+                event.type === 'response.audio.done'
+            ) {
                 this.emit('audioDone');
             }
 
+            if (event.type === 'response.created') {
+                this.emit('responseCreated', event);
+            }
+
+            if (event.type === 'response.done') {
+                this.emit('responseDone', event);
+            }
+
             if (event.type === 'conversation.item.input_audio_transcription.completed') {
-                this.emit('transcript', event.transcript);
+                if (event.transcript) {
+                    this.emit('transcript', event.transcript);
+                }
             }
 
             if (event.type === 'error') {
@@ -67,13 +90,8 @@ class RealtimeSession extends EventEmitter {
                             type: 'audio/pcm',
                             rate: 24000
                         },
-                        turn_detection: {
-                            type: 'server_vad',
-                            silence_duration_ms: 700,
-                            prefix_padding_ms: 300,
-                            create_response: true,
-                            interrupt_response: true
-                        },
+                        // Discord segments audio with its own VAD; we commit + response.create per segment.
+                        turn_detection: null,
                         transcription: {
                             model: 'gpt-4o-mini-transcribe'
                         }
@@ -103,6 +121,14 @@ class RealtimeSession extends EventEmitter {
 
     createResponse() {
         this.send({ type: 'response.create' });
+    }
+
+    cancelResponse() {
+        this.send({ type: 'response.cancel' });
+    }
+
+    clearOutputAudioBuffer() {
+        this.send({ type: 'output_audio_buffer.clear' });
     }
 
     clearInputBuffer() {

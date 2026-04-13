@@ -83,13 +83,16 @@ async function startRealtimeForGuild({
     let captureInProgress = false;
 
     rt.on('audioDelta', (delta) => {
-        console.log('[RT] got audio delta from OpenAI');
         const buffer = Buffer.from(delta, 'base64');
-        outputStream.write(buffer);
+        try {
+            outputStream.write(buffer);
+        } catch (err) {
+            console.error('[RT] output stream write failed:', err);
+        }
     });
 
     rt.on('audioDone', () => {
-        console.log('[RT] OpenAI finished audio response');
+        console.log('[RT] output audio chunk done');
     });
 
     rt.on('transcript', async (text) => {
@@ -97,7 +100,7 @@ async function startRealtimeForGuild({
         if (!textChannel || !text?.trim()) return;
 
         try {
-            await textChannel.send(`🗣️ **You said:** ${text}`);
+            await textChannel.send(`\u{1F5E3}\uFE0F **You said:** ${text}`);
         } catch (err) {
             console.error('Transcript send failed:', err);
         }
@@ -108,95 +111,86 @@ async function startRealtimeForGuild({
         console.log('[RT] response started');
     });
 
-    rt.on('responseDone', () => {
+    rt.on('responseDone', (event) => {
         responseInProgress = false;
-        console.log('[RT] response done');
+        const status = event?.response?.status;
+        console.log('[RT] response done', status ? `(status: ${status})` : '');
     });
 
     rt.on('error', (err) => {
         console.error('[REALTIME ERROR]', err);
     });
 
-    rt.on('responseCreated', () => {
-    responseInProgress = true;
-    console.log('[RT] response started');
-    });
-
-    rt.on('responseDone', () => {
-        responseInProgress = false;
-        console.log('[RT] response done');
-    });
-
     const receiver = connection.receiver;
 
     const handleSpeakingStart = (speakingUserId) => {
-    if (speakingUserId !== userId) return;
+        if (speakingUserId !== userId) return;
 
-    if (responseInProgress) {
-        console.log('[RT] ignoring speech because response is in progress');
-        return;
-    }
+        if (responseInProgress) {
+            console.log('[RT] user spoke during playback; cancelling response');
+            rt.cancelResponse();
+            rt.clearOutputAudioBuffer();
+            responseInProgress = false;
+        }
 
-    if (captureInProgress) {
-        console.log('[RT] ignoring speech because capture is already in progress');
-        return;
-    }
-
-    captureInProgress = true;
-    console.log('[RT] detected speaking start for target user:', speakingUserId);
-
-    const opusStream = receiver.subscribe(speakingUserId, {
-        end: {
-            behavior: EndBehaviorType.AfterSilence,
-            duration: 1000,
-        },
-    });
-
-    const decoder = new prism.opus.Decoder({
-        rate: 48000,
-        channels: 2,
-        frameSize: 960,
-    });
-
-    let appendedBytes = 0;
-
-    decoder.on('data', (chunk) => {
-        const pcm24kMono = pcm48kStereoTo24kMono(chunk);
-        appendedBytes += pcm24kMono.length;
-        rt.appendAudio(pcm24kMono.toString('base64'));
-    });
-
-    decoder.on('end', () => {
-        captureInProgress = false;
-
-        const minBytesFor100ms = 4800;
-
-        if (appendedBytes < minBytesFor100ms) {
-            console.log('[RT] skipping tiny audio segment:', appendedBytes);
-            rt.clearInputBuffer();
+        if (captureInProgress) {
+            console.log('[RT] ignoring speech because capture is already in progress');
             return;
         }
 
-        console.log('[RT] sent audio segment, total bytes:', appendedBytes);
+        captureInProgress = true;
+        console.log('[RT] detected speaking start for target user:', speakingUserId);
 
-        // Do NOT commit manually.
-        // Just ask for a response after the audio has been streamed.
-        if (!responseInProgress) {
-            rt.createResponse();
-        }
-    });
+        const opusStream = receiver.subscribe(speakingUserId, {
+            end: {
+                behavior: EndBehaviorType.AfterSilence,
+                duration: 1000,
+            },
+        });
 
-    decoder.on('error', (err) => {
-        captureInProgress = false;
-        console.error('[RT DECODER ERROR]', err);
-    });
+        const decoder = new prism.opus.Decoder({
+            rate: 48000,
+            channels: 2,
+            frameSize: 960,
+        });
 
-    opusStream.on('error', (err) => {
-        captureInProgress = false;
-        console.error('[RT OPUS STREAM ERROR]', err);
-    });
+        let appendedBytes = 0;
 
-    opusStream.pipe(decoder);
+        decoder.on('data', (chunk) => {
+            const pcm24kMono = pcm48kStereoTo24kMono(chunk);
+            appendedBytes += pcm24kMono.length;
+            rt.appendAudio(pcm24kMono.toString('base64'));
+        });
+
+        decoder.on('end', () => {
+            captureInProgress = false;
+
+            const minBytesFor100ms = 4800;
+
+            if (appendedBytes < minBytesFor100ms) {
+                console.log('[RT] skipping tiny audio segment:', appendedBytes);
+                rt.clearInputBuffer();
+                return;
+            }
+
+            console.log('[RT] committed audio segment, total bytes:', appendedBytes);
+            rt.commitAudio();
+            if (!responseInProgress) {
+                rt.createResponse();
+            }
+        });
+
+        decoder.on('error', (err) => {
+            captureInProgress = false;
+            console.error('[RT DECODER ERROR]', err);
+        });
+
+        opusStream.on('error', (err) => {
+            captureInProgress = false;
+            console.error('[RT OPUS STREAM ERROR]', err);
+        });
+
+        opusStream.pipe(decoder);
     };
 
     receiver.speaking.on('start', handleSpeakingStart);
