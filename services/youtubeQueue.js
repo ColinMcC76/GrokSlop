@@ -138,72 +138,63 @@ function streamYoutubeViaYtdlp(url) {
             stderrChunks.push(chunk);
         });
 
-        let settled = false;
         const hangMs = 25_000;
         let hangTimer;
+        let streamGiven = false;
 
-        const fail = (err) => {
-            if (settled) return;
-            settled = true;
+        child.on('error', (err) => {
+            if (streamGiven) {
+                console.error('[YouTube queue] yt-dlp error after stream start:', err);
+                return;
+            }
             if (hangTimer) {
                 clearTimeout(hangTimer);
+            }
+            if (err.code === 'ENOENT') {
+                err.message =
+                    'yt-dlp is not installed or not on PATH. Install: https://github.com/yt-dlp/yt-dlp#installation — or set YT_DLP_PATH to the executable.';
             }
             try {
                 child.kill('SIGKILL');
             } catch {}
             reject(err);
-        };
+        });
+
+        child.on('close', (code, signal) => {
+            const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
+            if (code !== 0 && code !== null) {
+                console.error(
+                    '[YouTube queue] yt-dlp exited',
+                    code,
+                    signal || '',
+                    errText ? errText.slice(0, 600) : ''
+                );
+            }
+        });
+
+        // Resolve immediately. Do NOT use stdout.once('data') before piping — in flowing mode that
+        // consumes the first chunk, so FFmpeg never sees the container header and playback is silent.
+        streamGiven = true;
+        resolve({ stream: child.stdout, child });
 
         hangTimer = setTimeout(() => {
             const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
-            fail(
-                new Error(
-                    `yt-dlp timed out after ${hangMs / 1000}s${errText ? `: ${errText.slice(0, 400)}` : ''}`
-                )
+            try {
+                child.kill('SIGKILL');
+            } catch {}
+            console.error(
+                '[YouTube queue] yt-dlp hang:',
+                `no stdout activity for ${hangMs / 1000}s`,
+                errText ? errText.slice(0, 400) : ''
             );
         }, hangMs);
         if (typeof hangTimer.unref === 'function') {
             hangTimer.unref();
         }
 
-        child.on('error', (err) => {
-            if (err.code === 'ENOENT') {
-                err.message =
-                    'yt-dlp is not installed or not on PATH. Install: https://github.com/yt-dlp/yt-dlp#installation — or set YT_DLP_PATH to the executable.';
-            }
-            fail(err);
-        });
-
-        const onFirstByte = () => {
-            if (settled) return;
-            settled = true;
+        child.stdout.once('readable', () => {
             if (hangTimer) {
                 clearTimeout(hangTimer);
-            }
-            resolve({ stream: child.stdout, child });
-        };
-
-        child.stdout.once('data', onFirstByte);
-
-        child.on('close', (code, signal) => {
-            if (settled) return;
-            const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
-            if (code !== 0 && code !== null) {
-                fail(
-                    new Error(
-                        `yt-dlp exited with code ${code}${signal ? ` (${signal})` : ''}${errText ? `: ${errText.slice(0, 500)}` : ''}`
-                    )
-                );
-                return;
-            }
-            if (code === 0 && !signal) {
-                fail(
-                    new Error(
-                        errText
-                            ? `yt-dlp produced no audio: ${errText.slice(0, 500)}`
-                            : 'yt-dlp produced no audio output.'
-                    )
-                );
             }
         });
     });
