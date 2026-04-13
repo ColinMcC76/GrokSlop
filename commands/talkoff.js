@@ -6,7 +6,7 @@ module.exports = {
         .setName('talkoff')
         .setDescription('Stop realtime voice chat with Grokslop'),
     async execute(interaction) {
-        const stopped = stopRealtimeForGuild(interaction.guild.id);
+        const stopped = await stopRealtimeForGuild(interaction.guild.id);
 
         if (!stopped) {
             await interaction.reply({

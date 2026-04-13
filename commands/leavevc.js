@@ -7,7 +7,7 @@ module.exports = {
         .setName('leavevc')
         .setDescription('Leave the current voice channel'),
     async execute(interaction) {
-        stopRealtimeForGuild(interaction.guild.id);
+        await stopRealtimeForGuild(interaction.guild.id);
         const left = leaveChannel(interaction.guild.id);
 
         if (!left) {

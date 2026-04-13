@@ -1,7 +1,16 @@
-const { EndBehaviorType, createAudioResource, StreamType } = require('@discordjs/voice');
+const {
+    EndBehaviorType,
+    createAudioResource,
+    StreamType,
+    AudioPlayerStatus,
+} = require('@discordjs/voice');
 const prism = require('prism-media');
 const { Transform } = require('node:stream');
 const { RealtimeSession } = require('./realtimeSession');
+
+const DISCORD_MSG_MAX = 1900;
+const PREFIX_ASSISTANT = '\u{1F916} **Grokslop:** ';
+const PREFIX_USER = '\u{1F5E3}\uFE0F **You said:** ';
 
 function pcm48kStereoTo24kMono(buffer) {
     const input = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
@@ -21,7 +30,6 @@ function pcm48kStereoTo24kMono(buffer) {
 
 /**
  * Realtime sends s16le PCM mono @ 24kHz. @discordjs/voice Raw → Opus expects 48kHz stereo s16le.
- * Upsample with sample doubling (zero-order hold), then duplicate channels — no ffmpeg subprocess.
  */
 function pcm24kMonoTo48kStereo(pcm24kMono) {
     const nIn = pcm24kMono.length / 2;
@@ -91,10 +99,6 @@ function waitForWritableRoom(stream) {
     });
 }
 
-/**
- * Writable backpressure: without awaiting drain, chunks can be dropped and VC stays silent
- * even when transcripts arrive. Do not use Promise.race(once(...)) — it leaks listeners.
- */
 function queuePcmWrite(stream, buf, chainRef) {
     chainRef.current = chainRef.current.then(async () => {
         if (stream.destroyed) return;
@@ -109,6 +113,43 @@ function queuePcmWrite(stream, buf, chainRef) {
             }
         }
     });
+}
+
+function splitForDiscord(text, prefix, maxLen = DISCORD_MSG_MAX) {
+    const budget = maxLen - prefix.length;
+    if (text.length <= budget) {
+        return [`${prefix}${text}`];
+    }
+    const cont = '\u{1F916} *(cont.)* ';
+    const parts = [];
+    let i = 0;
+    let partNum = 0;
+    while (i < text.length) {
+        const header = partNum === 0 ? prefix : cont;
+        const sliceBudget = maxLen - header.length;
+        let end = Math.min(i + sliceBudget, text.length);
+        if (end < text.length) {
+            const cut = text.lastIndexOf(' ', end);
+            if (cut > i + Math.min(80, sliceBudget * 0.5)) {
+                end = cut + 1;
+            }
+        }
+        const slice = text.slice(i, end).trim();
+        if (slice) {
+            parts.push(header + slice);
+        }
+        i = end;
+        partNum += 1;
+    }
+    return parts;
+}
+
+async function sendLongMessage(channel, text, prefix) {
+    if (!channel || !text?.trim()) return;
+    const chunks = splitForDiscord(text.trim(), prefix);
+    for (const chunk of chunks) {
+        await channel.send(chunk);
+    }
 }
 
 async function startRealtimeForGuild({
@@ -134,8 +175,19 @@ async function startRealtimeForGuild({
 
     let outputStream = createOutputPipeline(player);
     const pcmWriteChain = { current: Promise.resolve() };
+    let tearingDown = false;
 
-    function flushLocalPlayback() {
+    const onPlayerError = (err) => {
+        if (tearingDown) return;
+        const code = err?.error?.code ?? err?.code;
+        if (code === 'ERR_STREAM_PREMATURE_CLOSE') {
+            return;
+        }
+        console.error('[RT AudioPlayer]', err?.message || err);
+    };
+    player.on('error', onPlayerError);
+
+    function flushLocalPlaybackOnly() {
         pcmWriteChain.current = Promise.resolve();
         try {
             player.stop(true);
@@ -146,12 +198,17 @@ async function startRealtimeForGuild({
         outputStream = createOutputPipeline(player);
     }
 
+    function flushLocalPlayback() {
+        flushLocalPlaybackOnly();
+    }
+
     let responseInProgress = false;
     let captureInProgress = false;
     let outputPcmBytesThisResponse = 0;
     let loggedFirstPcmThisResponse = false;
 
     rt.on('audioDelta', (delta) => {
+        if (tearingDown) return;
         const buffer = Buffer.from(delta, 'base64');
         outputPcmBytesThisResponse += buffer.length;
         if (!loggedFirstPcmThisResponse) {
@@ -170,10 +227,9 @@ async function startRealtimeForGuild({
 
     rt.on('assistantTranscript', async (text) => {
         console.log('[RT] assistant said:', text.slice(0, 200) + (text.length > 200 ? '…' : ''));
-        if (!textChannel || !text?.trim()) return;
+        if (!textChannel || !text?.trim() || tearingDown) return;
         try {
-            const clip = text.length > 1800 ? `${text.slice(0, 1800)}…` : text;
-            await textChannel.send(`\u{1F916} **Grokslop:** ${clip}`);
+            await sendLongMessage(textChannel, text, PREFIX_ASSISTANT);
         } catch (err) {
             console.error('Assistant transcript send failed:', err);
         }
@@ -181,16 +237,17 @@ async function startRealtimeForGuild({
 
     rt.on('transcript', async (text) => {
         console.log('[RT] transcript from user:', text);
-        if (!textChannel || !text?.trim()) return;
+        if (!textChannel || !text?.trim() || tearingDown) return;
 
         try {
-            await textChannel.send(`\u{1F5E3}\uFE0F **You said:** ${text}`);
+            await sendLongMessage(textChannel, text, PREFIX_USER);
         } catch (err) {
             console.error('Transcript send failed:', err);
         }
     });
 
     rt.on('responseCreated', () => {
+        if (tearingDown) return;
         responseInProgress = true;
         outputPcmBytesThisResponse = 0;
         loggedFirstPcmThisResponse = false;
@@ -226,13 +283,12 @@ async function startRealtimeForGuild({
     const receiver = connection.receiver;
 
     const handleSpeakingStart = (speakingUserId) => {
-        if (speakingUserId !== userId) return;
+        if (speakingUserId !== userId || tearingDown) return;
 
         if (responseInProgress) {
-            console.log('[RT] user spoke during playback; cancelling response');
+            console.log('[RT] user spoke during playback; stopping assistant audio');
             rt.cancelResponse();
-            // output_audio_buffer.clear is WebRTC-only; not valid on the Realtime WebSocket API.
-            flushLocalPlayback();
+            flushLocalPlaybackOnly();
             responseInProgress = false;
         }
 
@@ -278,7 +334,7 @@ async function startRealtimeForGuild({
 
             console.log('[RT] committed audio segment, total bytes:', appendedBytes);
             rt.commitAudio();
-            if (!responseInProgress) {
+            if (!responseInProgress && !tearingDown) {
                 rt.createResponse();
             }
         });
@@ -300,6 +356,8 @@ async function startRealtimeForGuild({
 
     sessions.set(guildId, {
         rt,
+        player,
+        onPlayerError,
         get outputStream() {
             return outputStream;
         },
@@ -307,12 +365,17 @@ async function startRealtimeForGuild({
         textChannelId: textChannel?.id ?? null,
         handleSpeakingStart,
         receiver,
+        setTearingDown() {
+            tearingDown = true;
+        },
     });
 }
 
-function stopRealtimeForGuild(guildId) {
+async function stopRealtimeForGuild(guildId) {
     const existing = sessions.get(guildId);
     if (!existing) return false;
+
+    existing.setTearingDown?.();
 
     try {
         if (existing.receiver && existing.handleSpeakingStart) {
@@ -321,11 +384,28 @@ function stopRealtimeForGuild(guildId) {
     } catch {}
 
     try {
-        existing.outputStream.destroy();
+        if (existing.player && existing.onPlayerError) {
+            existing.player.off('error', existing.onPlayerError);
+        }
     } catch {}
 
     try {
         existing.rt.close();
+    } catch {}
+
+    try {
+        existing.player?.stop(true);
+    } catch {}
+
+    try {
+        existing.outputStream?.destroy();
+    } catch {}
+
+    try {
+        await new Promise((r) => setTimeout(r, 50));
+        if (existing.player && existing.player.state.status !== AudioPlayerStatus.Idle) {
+            existing.player.stop(true);
+        }
     } catch {}
 
     sessions.delete(guildId);

@@ -10,6 +10,7 @@ class RealtimeSession extends EventEmitter {
         this.model = model;
         this.ws = null;
         this._assistantTranscript = '';
+        this._assistantTranscriptEmitted = false;
     }
 
     async connect() {
@@ -83,12 +84,14 @@ class RealtimeSession extends EventEmitter {
                 const text = event.transcript?.trim() || this._assistantTranscript.trim();
                 this._assistantTranscript = '';
                 if (text) {
+                    this._assistantTranscriptEmitted = true;
                     this.emit('assistantTranscript', text);
                 }
             }
 
             if (event.type === 'response.created') {
                 this._assistantTranscript = '';
+                this._assistantTranscriptEmitted = false;
                 if (debug) {
                     console.log(
                         '[RT] response.created modalities:',
@@ -108,6 +111,18 @@ class RealtimeSession extends EventEmitter {
                         event.response?.status
                     );
                 }
+                const status = event.response?.status;
+                const partial = this._assistantTranscript.trim();
+                if (
+                    partial &&
+                    !this._assistantTranscriptEmitted &&
+                    status &&
+                    status !== 'completed'
+                ) {
+                    this.emit('assistantTranscript', partial);
+                }
+                this._assistantTranscript = '';
+                this._assistantTranscriptEmitted = false;
                 this.emit('responseDone', event);
             }
 
@@ -164,6 +179,7 @@ class RealtimeSession extends EventEmitter {
             type: 'response.create',
             response: {
                 output_modalities: ['audio'],
+                max_output_tokens: 4096,
                 audio: {
                     output: {
                         format: { type: 'audio/pcm', rate: 24000 },
