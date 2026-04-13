@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { leaveChannel } = require('../services/voiceManager');
 const { stopRealtimeForGuild } = require('../services/realtimeVoiceBridge');
 
@@ -11,7 +11,10 @@ module.exports = {
         const left = leaveChannel(interaction.guild.id);
 
         if (!left) {
-            await interaction.reply({ content: 'I am not in a voice channel.', ephemeral: true });
+            await interaction.reply({
+                content: 'I am not in a voice channel.',
+                flags: MessageFlags.Ephemeral
+            });
             return;
         }
 

@@ -24,7 +24,18 @@ module.exports = {
             return;
         }
 
-        await joinChannel(voiceChannel);
-        await interaction.reply(`Joined **${voiceChannel.name}**`);
+        await interaction.deferReply();
+
+        try {
+            await joinChannel(voiceChannel);
+            await interaction.editReply(`Joined **${voiceChannel.name}**`);
+        } catch (err) {
+            console.error('[joinvc] voice connection failed:', err);
+            const msg =
+                err?.name === 'AbortError' || err?.code === 'ABORT_ERR'
+                    ? 'Timed out connecting to voice. Check bot **Connect** / **Speak** permissions and try again.'
+                    : `Could not join voice: ${err.message || err}`;
+            await interaction.editReply(msg);
+        }
     }
 };
