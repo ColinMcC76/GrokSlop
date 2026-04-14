@@ -29,13 +29,33 @@ function classifyAttachment(attachment) {
 }
 
 async function extractAttachments(message) {
+    const entries = Array.from(message.attachments.values()).map((attachment) => {
+        const { isText, isImage } = classifyAttachment(attachment);
+        return { attachment, isText, isImage };
+    });
+
+    const textIndices = [];
+    for (let i = 0; i < entries.length; i++) {
+        if (entries[i].isText) {
+            textIndices.push(i);
+        }
+    }
+
+    const textContents = await Promise.all(
+        textIndices.map((i) => readTextAttachment(entries[i].attachment))
+    );
+
+    const textByIndex = new Map(
+        textIndices.map((i, j) => [i, textContents[j]])
+    );
+
     const results = [];
 
-    for (const attachment of message.attachments.values()) {
-        const { isText, isImage } = classifyAttachment(attachment);
+    for (let i = 0; i < entries.length; i++) {
+        const { attachment, isText, isImage } = entries[i];
 
         if (isText) {
-            const text = await readTextAttachment(attachment);
+            const text = textByIndex.get(i);
             if (text) {
                 results.push({
                     type: 'text',

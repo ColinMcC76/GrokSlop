@@ -45,4 +45,31 @@ CREATE TABLE IF NOT EXISTS user_memory (
 );
 `);
 
+function migrate() {
+    db.exec(`
+        DELETE FROM guild_memory
+        WHERE id IN (
+            SELECT o.id FROM guild_memory o
+            INNER JOIN (
+                SELECT guild_id, key, MAX(id) AS keep_id FROM guild_memory GROUP BY guild_id, key
+            ) k ON o.guild_id = k.guild_id AND o.key = k.key AND o.id != k.keep_id
+        );
+
+        DELETE FROM user_memory
+        WHERE id IN (
+            SELECT o.id FROM user_memory o
+            INNER JOIN (
+                SELECT guild_id, user_id, key, MAX(id) AS keep_id
+                FROM user_memory GROUP BY guild_id, user_id, key
+            ) k ON o.guild_id = k.guild_id AND o.user_id = k.user_id AND o.key = k.key AND o.id != k.keep_id
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_guild_memory_guild_key ON guild_memory(guild_id, key);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_memory_guild_user_key ON user_memory(guild_id, user_id, key);
+        CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel_id, created_at DESC);
+    `);
+}
+
+migrate();
+
 module.exports = db;
