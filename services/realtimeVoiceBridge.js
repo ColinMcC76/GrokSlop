@@ -8,10 +8,28 @@ const prism = require('prism-media');
 const { Transform } = require('node:stream');
 const { RealtimeSession } = require('./realtimeSession');
 const { ensurePlaying } = require('./youtubeQueue');
+const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
 
 const DISCORD_MSG_MAX = 1900;
 const PREFIX_ASSISTANT = '\u{1F916} **Grokslop:** ';
 const PREFIX_USER = '\u{1F5E3}\uFE0F **You said:** ';
+
+/** Min RMS (int16 mono) on first ~100ms of audio before we cancel assistant playback (VAD false positives / quiet noise). */
+const INTERRUPT_CONFIRM_RMS = Number(process.env.RT_INTERRUPT_MIN_RMS) || 450;
+/** 24kHz mono s16le bytes — ~100ms — used to measure speech energy before interrupting playback. */
+const INTERRUPT_CONFIRM_BYTES = 4800;
+
+function pcmMonoInt16Rms(buf) {
+    if (!buf || buf.length < 2) return 0;
+    const n = buf.length / 2;
+    const v = new Int16Array(buf.buffer, buf.byteOffset, n);
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+        const s = v[i];
+        sum += s * s;
+    }
+    return Math.sqrt(sum / n);
+}
 
 function pcm48kStereoTo24kMono(buffer) {
     const input = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
@@ -229,18 +247,32 @@ async function startRealtimeForGuild({
     });
 
     rt.on('assistantTranscript', async (text) => {
-        console.log('[RT] assistant said:', text.slice(0, 200) + (text.length > 200 ? '…' : ''));
-        if (!textChannel || !text?.trim() || tearingDown) return;
+        const trimmed = text?.trim() ?? '';
+        if (!isSubstantiveTranscript(trimmed)) {
+            if (trimmed) {
+                console.log('[RT] assistant transcript skipped (non-substantive):', trimmed.slice(0, 80));
+            }
+            return;
+        }
+        console.log('[RT] assistant said:', trimmed.slice(0, 200) + (trimmed.length > 200 ? '…' : ''));
+        if (!textChannel || tearingDown) return;
         try {
-            await sendLongMessage(textChannel, text, PREFIX_ASSISTANT);
+            await sendLongMessage(textChannel, trimmed, PREFIX_ASSISTANT);
         } catch (err) {
             console.error('Assistant transcript send failed:', err);
         }
     });
 
     rt.on('transcript', async (text) => {
-        console.log('[RT] transcript from user:', text);
-        if (!textChannel || !text?.trim() || tearingDown) return;
+        const trimmed = text?.trim() ?? '';
+        if (!isSubstantiveTranscript(trimmed)) {
+            if (trimmed) {
+                console.log('[RT] user transcript skipped (non-substantive):', trimmed.slice(0, 80));
+            }
+            return;
+        }
+        console.log('[RT] transcript from user:', trimmed);
+        if (!textChannel || tearingDown) return;
 
         try {
             const sourceUserId = transcriptSourceQueue.shift();
@@ -251,7 +283,7 @@ async function startRealtimeForGuild({
             const prefix = who
                 ? `\u{1F5E3}\uFE0F **${who}:** `
                 : PREFIX_USER;
-            await sendLongMessage(textChannel, text, prefix);
+            await sendLongMessage(textChannel, trimmed, prefix);
         } catch (err) {
             console.error('Transcript send failed:', err);
         }
@@ -330,20 +362,23 @@ async function startRealtimeForGuild({
     const handleSpeakingStart = (speakingUserId) => {
         if (!shouldCaptureUser(speakingUserId)) return;
 
-        if (responseInProgress) {
-            console.log('[RT] user spoke during playback; stopping assistant audio');
-            rt.cancelResponse();
-            flushLocalPlaybackOnly();
-            responseInProgress = false;
-        }
-
         if (captureByUser.get(speakingUserId)) {
             console.log('[RT] ignoring speech; capture already in progress for user:', speakingUserId);
             return;
         }
 
+        const mustConfirmSpeech = responseInProgress;
+
+        if (mustConfirmSpeech) {
+            console.log(
+                '[RT] possible speech during playback; confirming energy before interrupt (user:',
+                speakingUserId + ')'
+            );
+        } else {
+            console.log('[RT] detected speaking start for user:', speakingUserId);
+        }
+
         captureByUser.set(speakingUserId, true);
-        console.log('[RT] detected speaking start for user:', speakingUserId);
 
         const opusStream = receiver.subscribe(speakingUserId, {
             end: {
@@ -359,15 +394,82 @@ async function startRealtimeForGuild({
         });
 
         let appendedBytes = 0;
+        let interruptConfirmed = !mustConfirmSpeech;
+        let preInterruptBuffer = Buffer.alloc(0);
+
+        function abortQuietSegment(reason) {
+            captureByUser.delete(speakingUserId);
+            try {
+                opusStream.destroy();
+            } catch {}
+            try {
+                decoder.destroy();
+            } catch {}
+            if (reason) {
+                console.log('[RT]', reason);
+            }
+        }
 
         decoder.on('data', (chunk) => {
             const pcm24kMono = pcm48kStereoTo24kMono(chunk);
+
+            if (!interruptConfirmed) {
+                preInterruptBuffer = Buffer.concat([preInterruptBuffer, pcm24kMono]);
+                if (preInterruptBuffer.length < INTERRUPT_CONFIRM_BYTES) {
+                    return;
+                }
+                const head = preInterruptBuffer.subarray(0, INTERRUPT_CONFIRM_BYTES);
+                const rms = pcmMonoInt16Rms(head);
+                if (rms < INTERRUPT_CONFIRM_RMS) {
+                    abortQuietSegment(
+                        `playback interrupt ignored (low energy, rms=${rms.toFixed(0)} < ${INTERRUPT_CONFIRM_RMS})`
+                    );
+                    return;
+                }
+                interruptConfirmed = true;
+                console.log(
+                    '[RT] user speech confirmed during playback; stopping assistant audio (rms=' +
+                        rms.toFixed(0) +
+                        ')'
+                );
+                rt.cancelResponse();
+                flushLocalPlaybackOnly();
+                responseInProgress = false;
+
+                appendedBytes = preInterruptBuffer.length;
+                rt.appendAudio(preInterruptBuffer.toString('base64'));
+                preInterruptBuffer = Buffer.alloc(0);
+                return;
+            }
+
             appendedBytes += pcm24kMono.length;
             rt.appendAudio(pcm24kMono.toString('base64'));
         });
 
         decoder.on('end', () => {
             captureByUser.delete(speakingUserId);
+
+            if (!interruptConfirmed) {
+                if (preInterruptBuffer.length > 0) {
+                    const rms = pcmMonoInt16Rms(preInterruptBuffer);
+                    if (rms < INTERRUPT_CONFIRM_RMS) {
+                        console.log(
+                            '[RT] playback interrupt ignored (segment ended before confirm, rms=' +
+                                rms.toFixed(0) +
+                                ')'
+                        );
+                        return;
+                    }
+                    interruptConfirmed = true;
+                    rt.cancelResponse();
+                    flushLocalPlaybackOnly();
+                    responseInProgress = false;
+                    appendedBytes = preInterruptBuffer.length;
+                    rt.appendAudio(preInterruptBuffer.toString('base64'));
+                } else {
+                    return;
+                }
+            }
 
             const minBytesFor100ms = 4800;
 

@@ -1,5 +1,6 @@
 const WebSocket = require('ws');
 const EventEmitter = require('node:events');
+const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
 
 class RealtimeSession extends EventEmitter {
     constructor({ apiKey, instructions, voice = 'cedar', model = 'gpt-realtime' }) {
@@ -83,7 +84,7 @@ class RealtimeSession extends EventEmitter {
             if (event.type === 'response.output_audio_transcript.done') {
                 const text = event.transcript?.trim() || this._assistantTranscript.trim();
                 this._assistantTranscript = '';
-                if (text) {
+                if (isSubstantiveTranscript(text)) {
                     this._assistantTranscriptEmitted = true;
                     this.emit('assistantTranscript', text);
                 }
@@ -114,7 +115,7 @@ class RealtimeSession extends EventEmitter {
                 const status = event.response?.status;
                 const partial = this._assistantTranscript.trim();
                 if (
-                    partial &&
+                    isSubstantiveTranscript(partial) &&
                     !this._assistantTranscriptEmitted &&
                     status &&
                     status !== 'completed'
@@ -127,8 +128,9 @@ class RealtimeSession extends EventEmitter {
             }
 
             if (event.type === 'conversation.item.input_audio_transcription.completed') {
-                if (event.transcript) {
-                    this.emit('transcript', event.transcript);
+                const t = event.transcript?.trim() ?? '';
+                if (isSubstantiveTranscript(t)) {
+                    this.emit('transcript', t);
                 }
             }
 
