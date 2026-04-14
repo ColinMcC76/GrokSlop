@@ -80,7 +80,11 @@ function leaveChannel(guildId) {
     if (!data) return false;
 
     removeYoutubeQueue(guildId);
-    data.connection.destroy();
+    try {
+        data.connection.destroy();
+    } catch {
+        /* may already be torn down (e.g. server-side disconnect) */
+    }
     connections.delete(guildId);
     return true;
 }

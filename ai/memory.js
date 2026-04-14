@@ -84,11 +84,29 @@ function upsertUserMemory(guildId, userId, key, value, weight = 1) {
     upsertUserMemoryStmt.run({ guildId, userId, key, value, weight, now });
 }
 
+function deleteGuildMemory(guildId, key) {
+    const info = db.prepare(`
+        DELETE FROM guild_memory
+        WHERE guild_id = ? AND key = ?
+    `).run(guildId, key);
+    return info.changes;
+}
+
+function deleteUserMemory(guildId, userId, key) {
+    const info = db.prepare(`
+        DELETE FROM user_memory
+        WHERE guild_id = ? AND user_id = ? AND key = ?
+    `).run(guildId, userId, key);
+    return info.changes;
+}
+
 module.exports = {
     saveMessage,
     getRecentMessages,
     getGuildMemory,
     getUserMemory,
     upsertGuildMemory,
-    upsertUserMemory
+    upsertUserMemory,
+    deleteGuildMemory,
+    deleteUserMemory
 };

@@ -485,12 +485,30 @@ function queueLength(guildId) {
     return queues.get(guildId)?.items.length ?? 0;
 }
 
+/**
+ * @param {string} guildId
+ * @returns {{ current: QueueItem | null, upcoming: QueueItem[], total: number }}
+ */
+function getQueueSnapshot(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        return { current: null, upcoming: [], total: 0 };
+    }
+    const [current, ...rest] = state.items;
+    return {
+        current,
+        upcoming: rest,
+        total: state.items.length,
+    };
+}
+
 module.exports = {
     enqueue,
     skip,
     stopAndClear,
     removeGuild,
     queueLength,
+    getQueueSnapshot,
     ensurePlaying,
     isPlayDlInstalled,
 };

@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
-const { getConnectionData } = require('../services/voiceManager');
+const { getConnectionData, joinChannel } = require('../services/voiceManager');
 const { enqueue } = require('../services/youtubeQueue');
 const { isRealtimeActive } = require('../services/realtimeVoiceBridge');
 
@@ -24,18 +24,39 @@ module.exports = {
             return;
         }
 
-        const connectionData = getConnectionData(interaction.guild.id);
+        let connectionData = getConnectionData(interaction.guild.id);
         if (!connectionData) {
-            await interaction.reply({
-                content: 'Join a voice channel with /joinvc first.',
-                flags: MessageFlags.Ephemeral,
-            });
-            return;
+            const member = await interaction.guild.members.fetch(
+                interaction.user.id
+            );
+            const voiceChannel = member.voice.channel;
+            if (!voiceChannel) {
+                await interaction.reply({
+                    content:
+                        'Join a voice channel first (or use /joinvc), then run /play.',
+                    flags: MessageFlags.Ephemeral,
+                });
+                return;
+            }
         }
 
         await interaction.deferReply();
 
         try {
+            if (!connectionData) {
+                const member = await interaction.guild.members.fetch(
+                    interaction.user.id
+                );
+                const voiceChannel = member.voice.channel;
+                if (!voiceChannel) {
+                    await interaction.editReply(
+                        'You left the voice channel before I could join.'
+                    );
+                    return;
+                }
+                connectionData = await joinChannel(voiceChannel);
+            }
+
             const { added, titles } = await enqueue(
                 interaction.guild.id,
                 connectionData.player,
@@ -53,9 +74,11 @@ module.exports = {
             );
         } catch (err) {
             console.error('play command failed:', err);
-            await interaction.editReply(
-                `Could not queue that: ${err.message || err}`
-            );
+            const msg =
+                err?.name === 'AbortError' || err?.code === 'ABORT_ERR'
+                    ? 'Timed out connecting to voice. Check bot permissions and try again.'
+                    : `Could not queue that: ${err.message || err}`;
+            await interaction.editReply(msg);
         }
     },
 };
