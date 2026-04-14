@@ -11,7 +11,7 @@ const { ensurePlaying } = require('./youtubeQueue');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
 
 const DISCORD_MSG_MAX = 1900;
-const PREFIX_ASSISTANT = '\u{1F916} **Grokslop:** ';
+const PREFIX_ASSISTANT = '\u{1F916} **Shabbot:** ';
 const PREFIX_USER = '\u{1F5E3}\uFE0F **You said:** ';
 
 /** Min RMS (int16 mono) on first ~100ms of audio before we cancel assistant playback (VAD false positives / quiet noise). */
