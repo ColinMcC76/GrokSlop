@@ -37,7 +37,7 @@ function buildPrompt({ message, recentMessages, guildMemory, userMemory, attachm
         : 'None';
 
     return {
-        instructions: persona,
+        instructions: persona.textChat,
         input: `
 Guild memory:
 ${guildMemoryBlock}

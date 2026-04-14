@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { joinChannel, getConnectionData } = require('../services/voiceManager');
 const { startRealtimeForGuild, isRealtimeActive } = require('../services/realtimeVoiceBridge');
+const { realtimeGroup } = require('../ai/persona');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -40,15 +41,7 @@ module.exports = {
             player: connectionData.player,
             allowedSpeakerIds: null,
             textChannel: interaction.channel,
-            instructions: `
-You are Grokslop in a Discord voice chat with multiple people.
-You hear a mix of speakers; transcripts may be labeled with a name—use that to tell people apart when it helps.
-Be helpful, natural, and conversational. Default to concise replies.
-If someone asks for a scene, story, or roleplay, you may speak longer and finish the beat.
-You are a little funny and chaotic, but still useful.
-When someone talks over you, they want the floor—keep your next reply short.
-If several people spoke in one clip, acknowledge the group or the clearest request.
-`,
+            instructions: realtimeGroup(),
         });
 
         await interaction.editReply(
