@@ -25,11 +25,12 @@ module.exports = {
         }
 
         let connectionData = getConnectionData(interaction.guild.id);
+        let voiceChannel = null;
         if (!connectionData) {
             const member = await interaction.guild.members.fetch(
                 interaction.user.id
             );
-            const voiceChannel = member.voice.channel;
+            voiceChannel = member.voice.channel;
             if (!voiceChannel) {
                 await interaction.reply({
                     content:
@@ -44,11 +45,11 @@ module.exports = {
 
         try {
             if (!connectionData) {
-                const member = await interaction.guild.members.fetch(
-                    interaction.user.id
-                );
-                const voiceChannel = member.voice.channel;
-                if (!voiceChannel) {
+                const stillInChannel =
+                    interaction.guild.voiceStates.cache.get(
+                        interaction.user.id
+                    )?.channelId === voiceChannel.id;
+                if (!stillInChannel) {
                     await interaction.editReply(
                         'You left the voice channel before I could join.'
                     );

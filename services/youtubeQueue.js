@@ -41,11 +41,13 @@ function isPlayDlInstalled() {
  *   generation: number,
  *   drainChain: Promise<void>,
  *   onPlayerError: (err: Error) => void,
+ *   ytdlpChild: import('node:child_process').ChildProcess | null,
  * }} GuildQueueState
  */
 
 const MAX_PLAYLIST_TRACKS = 25;
 const IDLE_WAIT_MS = 3_600_000;
+const MAX_YTDLP_STDERR_BYTES = 128 * 1024;
 
 /**
  * youtu.be and watch?v=…&list=… should play as a single video with a canonical URL.
@@ -85,16 +87,21 @@ function normalizeYouTubeInput(raw) {
  * video_info runs full decipher; stream_from_info uses that.
  */
 async function createYoutubeStream(play, url) {
+    let cachedInfo = null;
     const attempts = [
-        async () =>
-            play.stream_from_info(await play.video_info(url), {
+        async () => {
+            cachedInfo = await play.video_info(url);
+            return play.stream_from_info(cachedInfo, {
                 discordPlayerCompatibility: true,
-            }),
+            });
+        },
         async () => play.stream(url, { discordPlayerCompatibility: true }),
-        async () =>
-            play.stream_from_info(await play.video_info(url), {
+        async () => {
+            const info = cachedInfo ?? (await play.video_info(url));
+            return play.stream_from_info(info, {
                 discordPlayerCompatibility: false,
-            }),
+            });
+        },
         async () => play.stream(url, { discordPlayerCompatibility: false }),
     ];
 
@@ -123,7 +130,7 @@ function streamYoutubeViaYtdlp(url) {
         '-f',
         format,
         '-S',
-        '-abr,-asr',
+        '+abr',
         '-o',
         '-',
         '--no-playlist',
@@ -140,8 +147,12 @@ function streamYoutubeViaYtdlp(url) {
         });
 
         const stderrChunks = [];
+        let stderrTotal = 0;
         child.stderr.on('data', (chunk) => {
-            stderrChunks.push(chunk);
+            if (stderrTotal < MAX_YTDLP_STDERR_BYTES) {
+                stderrChunks.push(chunk);
+                stderrTotal += chunk.length;
+            }
         });
 
         const hangMs = 25_000;
@@ -399,6 +410,18 @@ async function playNextFromQueue(state) {
 }
 
 /**
+ * Serializes playback; swallows rejections so a rare failure cannot brick later enqueues.
+ * @param {GuildQueueState} state
+ * @param {() => Promise<void>} fn
+ */
+function chainDrain(state, fn) {
+    state.drainChain = state.drainChain
+        .catch(() => {})
+        .then(fn)
+        .catch(() => {});
+}
+
+/**
  * @param {string} guildId
  * @param {import('@discordjs/voice').AudioPlayer} player
  * @param {import('discord.js').TextBasedChannel | null} textChannel
@@ -415,7 +438,7 @@ async function enqueue(guildId, player, textChannel, query) {
     state.items.push(...items);
 
     if (wasEmpty && state.player.state.status === AudioPlayerStatus.Idle) {
-        state.drainChain = state.drainChain.then(() => playCurrentTrack(state));
+        chainDrain(state, () => playCurrentTrack(state));
     }
 
     return { added: items.length, titles: items.map((i) => i.title) };
@@ -432,7 +455,7 @@ function ensurePlaying(guildId) {
     if (state.player.state.status !== AudioPlayerStatus.Idle) {
         return;
     }
-    state.drainChain = state.drainChain.then(() => playCurrentTrack(state));
+    chainDrain(state, () => playCurrentTrack(state));
 }
 
 function skip(guildId) {
@@ -446,7 +469,7 @@ function skip(guildId) {
         state.player.stop(true);
     } catch {}
     state.items.shift();
-    state.drainChain = state.drainChain.then(() => playNextFromQueue(state));
+    chainDrain(state, () => playNextFromQueue(state));
     return true;
 }
 
