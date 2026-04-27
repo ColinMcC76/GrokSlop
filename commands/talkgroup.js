@@ -1,7 +1,8 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { joinChannel, getConnectionData } = require('../services/voiceManager');
 const { startRealtimeForGuild, isRealtimeActive } = require('../services/realtimeVoiceBridge');
-const { realtimeGroup } = require('../ai/persona');
+const persona = require('../ai/persona');
+const { getActivePromptText } = require('../ai/guildPersonas');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -41,7 +42,9 @@ module.exports = {
             player: connectionData.player,
             allowedSpeakerIds: null,
             textChannel: interaction.channel,
-            instructions: realtimeGroup(),
+            instructions: persona.realtimeGroupWithPersona(
+                getActivePromptText(interaction.guild.id)
+            ),
         });
 
         await interaction.editReply(

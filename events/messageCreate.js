@@ -53,6 +53,7 @@ module.exports = {
             const useWebSearch = needsWebSearch(message.content);
 
             const prompt = buildPrompt({
+                guildId: message.guild.id,
                 message: {
                     content: message.content,
                     authorUsername: message.author.username

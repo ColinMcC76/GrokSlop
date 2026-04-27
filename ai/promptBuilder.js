@@ -1,4 +1,5 @@
 const persona = require('./persona');
+const { getActivePromptText } = require('./guildPersonas');
 const config = require('../config');
 
 function truncate(text, max = config.maxPromptCharsPerMessage) {
@@ -6,7 +7,14 @@ function truncate(text, max = config.maxPromptCharsPerMessage) {
     return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
-function buildPrompt({ message, recentMessages, guildMemory, userMemory, attachments }) {
+function buildPrompt({
+    guildId,
+    message,
+    recentMessages,
+    guildMemory,
+    userMemory,
+    attachments,
+}) {
     const recentBlock = recentMessages
         .map(m => {
             const speaker = m.is_bot ? `${m.username} (bot)` : m.username;
@@ -36,8 +44,10 @@ function buildPrompt({ message, recentMessages, guildMemory, userMemory, attachm
         }).join('\n\n')
         : 'None';
 
+    const customPersona = guildId ? getActivePromptText(guildId) : null;
+
     return {
-        instructions: persona.textChat,
+        instructions: persona.textChatWithPersona(customPersona),
         input: `
 Guild memory:
 ${guildMemoryBlock}

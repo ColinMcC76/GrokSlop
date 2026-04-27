@@ -200,6 +200,16 @@ class RealtimeSession extends EventEmitter {
         this.send({ type: 'input_audio_buffer.clear' });
     }
 
+    updateInstructions(instructions) {
+        this.instructions = instructions;
+        this.send({
+            type: 'session.update',
+            session: {
+                instructions: this.instructions,
+            },
+        });
+    }
+
     send(payload) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(payload));

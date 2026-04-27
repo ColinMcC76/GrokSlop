@@ -67,6 +67,19 @@ function migrate() {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_guild_memory_guild_key ON guild_memory(guild_id, key);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_user_memory_guild_user_key ON user_memory(guild_id, user_id, key);
         CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS guild_personas (
+            guild_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS guild_persona_selection (
+            guild_id TEXT PRIMARY KEY,
+            persona_name TEXT
+        );
     `);
 }
 
