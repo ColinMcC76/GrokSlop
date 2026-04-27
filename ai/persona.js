@@ -67,6 +67,33 @@ function realtimeGroup() {
     return `${textChat}\n\n${voiceGroupAddon}`;
 }
 
+const CUSTOM_PERSONA_HEADING = '\n\n--- Custom server persona ---\n';
+
+/**
+ * Appends a guild-specific persona prompt to the base instructions (text or realtime).
+ * @param {string} base
+ * @param {string | null | undefined} customPrompt
+ */
+function withCustomPersona(base, customPrompt) {
+    const extra = typeof customPrompt === 'string' ? customPrompt.trim() : '';
+    if (!extra) {
+        return base;
+    }
+    return `${base}${CUSTOM_PERSONA_HEADING}${extra}`;
+}
+
+function textChatWithPersona(customPrompt) {
+    return withCustomPersona(textChat, customPrompt);
+}
+
+function realtimeSoloWithPersona(customPrompt) {
+    return withCustomPersona(realtimeSolo(), customPrompt);
+}
+
+function realtimeGroupWithPersona(customPrompt) {
+    return withCustomPersona(realtimeGroup(), customPrompt);
+}
+
 module.exports = {
     textChat,
     voiceSoloAddon,
@@ -74,4 +101,8 @@ module.exports = {
     ttsInstructions,
     realtimeSolo,
     realtimeGroup,
+    withCustomPersona,
+    textChatWithPersona,
+    realtimeSoloWithPersona,
+    realtimeGroupWithPersona,
 };

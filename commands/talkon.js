@@ -1,7 +1,8 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { joinChannel, getConnectionData } = require('../services/voiceManager');
 const { startRealtimeForGuild, isRealtimeActive } = require('../services/realtimeVoiceBridge');
-const { realtimeSolo } = require('../ai/persona');
+const persona = require('../ai/persona');
+const { getActivePromptText } = require('../ai/guildPersonas');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -41,7 +42,9 @@ module.exports = {
             player: connectionData.player,
             allowedSpeakerIds: new Set([interaction.user.id]),
             textChannel: interaction.channel,
-            instructions: realtimeSolo(),
+            instructions: persona.realtimeSoloWithPersona(
+                getActivePromptText(interaction.guild.id)
+            ),
         });
 
         await interaction.editReply(`🎙️ Realtime voice mode is on in **${voiceChannel.name}**. I am listening to **${interaction.user.username}**.`);

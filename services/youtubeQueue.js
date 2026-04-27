@@ -42,12 +42,25 @@ function isPlayDlInstalled() {
  *   drainChain: Promise<void>,
  *   onPlayerError: (err: Error) => void,
  *   ytdlpChild: import('node:child_process').ChildProcess | null,
+ *   volumePercent: number,
  * }} GuildQueueState
  */
 
 const MAX_PLAYLIST_TRACKS = 25;
 const IDLE_WAIT_MS = 3_600_000;
 const MAX_YTDLP_STDERR_BYTES = 128 * 1024;
+
+/**
+ * @param {import('@discordjs/voice').AudioResource<unknown>} resource
+ * @param {number} percent 0–100
+ */
+function applyVolumeToResource(resource, percent) {
+    if (!resource?.volume || typeof percent !== 'number') {
+        return;
+    }
+    const linear = Math.max(0, Math.min(1, percent / 100));
+    resource.volume.setVolume(linear);
+}
 
 /**
  * youtu.be and watch?v=…&list=… should play as a single video with a canonical URL.
@@ -244,8 +257,12 @@ function getOrCreateState(guildId, player) {
             drainChain: Promise.resolve(),
             onPlayerError,
             ytdlpChild: null,
+            volumePercent: 100,
         };
         queues.set(guildId, s);
+    }
+    if (typeof s.volumePercent !== 'number' || Number.isNaN(s.volumePercent)) {
+        s.volumePercent = 100;
     }
     s.player = player;
     return s;
@@ -349,8 +366,10 @@ async function playCurrentTrack(state) {
             });
             resource = createAudioResource(stream, {
                 inputType: StreamType.Arbitrary,
+                inlineVolume: true,
                 metadata: { title: item.title, url: item.url },
             });
+            applyVolumeToResource(resource, state.volumePercent);
             console.log('[YouTube queue] streaming via yt-dlp');
         } catch (ytdlpErr) {
             console.warn('[YouTube queue] yt-dlp failed, trying play-dl:', ytdlpErr.message || ytdlpErr);
@@ -358,8 +377,10 @@ async function playCurrentTrack(state) {
             const ytStream = await createYoutubeStream(play, item.url);
             resource = createAudioResource(ytStream.stream, {
                 inputType: ytStream.type,
+                inlineVolume: true,
                 metadata: { title: item.title, url: item.url },
             });
+            applyVolumeToResource(resource, state.volumePercent);
             try {
                 play.attachListeners(state.player, ytStream);
             } catch {}
@@ -525,6 +546,40 @@ function getQueueSnapshot(guildId) {
     };
 }
 
+/**
+ * @param {string} guildId
+ * @param {import('@discordjs/voice').AudioPlayer} player
+ * @param {number} percent 0–100, step 5
+ * @returns {number} applied percent
+ */
+function setYoutubeVolume(guildId, player, percent) {
+    if (
+        typeof percent !== 'number' ||
+        percent < 0 ||
+        percent > 100 ||
+        percent % 5 !== 0
+    ) {
+        throw new Error('Volume must be between 0 and 100 in steps of 5.');
+    }
+    const state = getOrCreateState(guildId, player);
+    state.volumePercent = percent;
+    const res = state.player.state.resource;
+    if (res) {
+        applyVolumeToResource(res, percent);
+    }
+    return percent;
+}
+
+/**
+ * @param {string} guildId
+ * @returns {number}
+ */
+function getYoutubeVolume(guildId) {
+    const s = queues.get(guildId);
+    const p = s?.volumePercent;
+    return typeof p === 'number' && !Number.isNaN(p) ? p : 100;
+}
+
 module.exports = {
     enqueue,
     skip,
@@ -534,4 +589,6 @@ module.exports = {
     getQueueSnapshot,
     ensurePlaying,
     isPlayDlInstalled,
+    setYoutubeVolume,
+    getYoutubeVolume,
 };

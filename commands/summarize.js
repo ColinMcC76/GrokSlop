@@ -2,6 +2,8 @@ const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { getRecentMessages } = require('../ai/memory');
 const { generateResponse } = require('../ai/router');
 const { splitDiscordContent } = require('../utils/discordChunks');
+const { withCustomPersona } = require('../ai/persona');
+const { getActivePromptText } = require('../ai/guildPersonas');
 
 const DEFAULT_LIMIT = 30;
 const MIN_LIMIT = 5;
@@ -49,10 +51,15 @@ module.exports = {
             transcript = transcript.slice(-MAX_TRANSCRIPT_CHARS);
         }
 
-        const instructions = `You summarize a short excerpt of a Discord text channel.
+        const baseInstructions = `You summarize a short excerpt of a Discord text channel.
 Output a concise bullet list of the main topics and any clear decisions or action items.
 Do not invent messages or facts that are not implied by the excerpt.
 If the excerpt is mostly noise or off-topic, say so briefly.`;
+
+        const instructions = withCustomPersona(
+            baseInstructions,
+            getActivePromptText(interaction.guild.id)
+        );
 
         const input = `Recent messages in this channel (oldest first among this batch):\n\n${transcript}`;
 

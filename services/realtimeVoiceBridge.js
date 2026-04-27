@@ -9,6 +9,8 @@ const { Transform } = require('node:stream');
 const { RealtimeSession } = require('./realtimeSession');
 const { ensurePlaying } = require('./youtubeQueue');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
+const persona = require('../ai/persona');
+const { getActivePromptText } = require('../ai/guildPersonas');
 
 const DISCORD_MSG_MAX = 1900;
 const PREFIX_ASSISTANT = '\u{1F916} **Shabbot:** ';
@@ -512,6 +514,7 @@ async function startRealtimeForGuild({
             return outputStream;
         },
         allowedSpeakerIds: isGroupListen ? null : allowedSpeakerIds,
+        mode: isGroupListen ? 'group' : 'solo',
         textChannelId: textChannel?.id ?? null,
         handleSpeakingStart,
         receiver,
@@ -567,8 +570,28 @@ function isRealtimeActive(guildId) {
     return sessions.has(guildId);
 }
 
+/**
+ * Rebuild realtime instructions from the current guild persona (if any).
+ * @param {string} guildId
+ * @returns {boolean} true if a session was updated
+ */
+function refreshRealtimePersona(guildId) {
+    const existing = sessions.get(guildId);
+    if (!existing?.rt) {
+        return false;
+    }
+    const custom = getActivePromptText(guildId);
+    const instructions =
+        existing.mode === 'group'
+            ? persona.realtimeGroupWithPersona(custom)
+            : persona.realtimeSoloWithPersona(custom);
+    existing.rt.updateInstructions(instructions);
+    return true;
+}
+
 module.exports = {
     startRealtimeForGuild,
     stopRealtimeForGuild,
     isRealtimeActive,
+    refreshRealtimePersona,
 };
