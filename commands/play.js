@@ -2,6 +2,7 @@ const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { getConnectionData, joinChannel } = require('../services/voiceManager');
 const { enqueue } = require('../services/youtubeQueue');
 const { isRealtimeActive } = require('../services/realtimeVoiceBridge');
+const { isActive: isSpotifySpeakerActive } = require('../services/spotifyConnect');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -19,6 +20,15 @@ module.exports = {
         if (isRealtimeActive(interaction.guild.id)) {
             await interaction.reply({
                 content: 'Turn off realtime voice (/talkoff) before playing YouTube audio.',
+                flags: MessageFlags.Ephemeral,
+            });
+            return;
+        }
+
+        if (isSpotifySpeakerActive(interaction.guild.id)) {
+            await interaction.reply({
+                content:
+                    'Spotify Connect is using the voice speaker. Stop playback on Spotify or `/spotify unlink` before YouTube playback.',
                 flags: MessageFlags.Ephemeral,
             });
             return;

@@ -10,6 +10,10 @@ const {
 } = require('@discordjs/voice');
 const fs = require('node:fs');
 const { removeGuild: removeYoutubeQueue } = require('./youtubeQueue');
+const {
+    attachIfLinkedInVoice,
+    stopDiscordOutput,
+} = require('./spotifyConnect');
 
 const connections = new Map();
 
@@ -30,6 +34,7 @@ async function joinChannel(voiceChannel) {
             });
         }
         await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_MS);
+        await attachIfLinkedInVoice(guildId, player);
         return { connection, player };
     }
 
@@ -50,6 +55,7 @@ async function joinChannel(voiceChannel) {
         connection.subscribe(player);
         await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_MS);
         connections.set(guildId, { connection, player });
+        await attachIfLinkedInVoice(guildId, player);
         return { connection, player };
     }
 
@@ -72,6 +78,7 @@ async function joinChannel(voiceChannel) {
     await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_MS);
 
     connections.set(guildId, { connection, player });
+    await attachIfLinkedInVoice(guildId, player);
     return { connection, player };
 }
 
@@ -80,6 +87,7 @@ function leaveChannel(guildId) {
     if (!data) return false;
 
     removeYoutubeQueue(guildId);
+    stopDiscordOutput(guildId);
     try {
         data.connection.destroy();
     } catch {
