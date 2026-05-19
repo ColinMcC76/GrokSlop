@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { joinChannel, getConnectionData } = require('../services/voiceManager');
 const { startRealtimeForGuild, isRealtimeActive } = require('../services/realtimeVoiceBridge');
+const { isActive: isSpotifySpeakerActive, stopDiscordOutput } = require('../services/spotifyConnect');
 const persona = require('../ai/persona');
 const { getActivePromptText } = require('../ai/guildPersonas');
 
@@ -27,6 +28,16 @@ module.exports = {
             });
             return;
         }
+
+        if (isSpotifySpeakerActive(interaction.guild.id)) {
+            await interaction.reply({
+                content: 'Stop Spotify Connect playback before starting realtime voice.',
+                flags: MessageFlags.Ephemeral,
+            });
+            return;
+        }
+
+        stopDiscordOutput(interaction.guild.id);
 
         await interaction.deferReply();
 

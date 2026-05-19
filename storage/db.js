@@ -80,6 +80,16 @@ function migrate() {
             guild_id TEXT PRIMARY KEY,
             persona_name TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS guild_spotify (
+            guild_id TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            device_name TEXT NOT NULL,
+            linked_by TEXT,
+            updated_at INTEGER NOT NULL
+        );
     `);
 }
 
