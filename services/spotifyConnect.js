@@ -160,7 +160,7 @@ function wireLibrespotLogs(guildId, librespot, rt) {
         if (err.code === 'ENOENT') {
             console.error(
                 `[spotify:${guildId}] librespot not found at "${LIBRESPOT_BIN}". ` +
-                    'Install from https://github.com/librespot-org/librespot/releases and set LIBRESPOT_PATH.'
+                    'Windows: build librespot.exe (see docs/librespot-windows.md) and set LIBRESPOT_PATH in .env.'
             );
         } else {
             console.error(`[spotify:${guildId}] librespot error:`, err);
