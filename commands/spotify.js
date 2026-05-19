@@ -12,6 +12,7 @@ const {
 const { createOAuthState } = require('../services/spotifyOAuthServer');
 const { stopGuild, isActive } = require('../services/spotifyConnect');
 const { getConnectionData } = require('../services/voiceManager');
+const { isRealtimeActive } = require('../services/realtimeVoiceBridge');
 
 module.exports = {
     data: new SlashCommandBuilder()
