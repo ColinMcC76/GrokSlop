@@ -95,22 +95,45 @@ function startSpotifyOAuthServer(client) {
             saveGuildTokens(pending.guildId, pending.userId, tokens);
 
             const { getConnectionData } = require('./voiceManager');
-            const { attachIfLinkedInVoice, isActive } = require('./spotifyConnect');
+            const {
+                ensureConnectDevice,
+                attachIfLinkedInVoice,
+                isActive,
+                getDiagnostics,
+            } = require('./spotifyConnect');
             const { defaultDeviceName } = require('./spotifyAuth');
+
+            let connectError = null;
+            try {
+                await ensureConnectDevice(pending.guildId);
+            } catch (e) {
+                connectError = e;
+                console.error('[spotify] ensureConnectDevice after link:', e);
+            }
 
             const conn = getConnectionData(pending.guildId);
             if (conn?.player) {
-                await attachIfLinkedInVoice(pending.guildId, conn.player);
+                try {
+                    await attachIfLinkedInVoice(pending.guildId, conn.player);
+                } catch (e) {
+                    console.error('[spotify] attach voice after link:', e);
+                }
             }
 
             const deviceName = defaultDeviceName();
+            const diag = getDiagnostics(pending.guildId);
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(
                 `<p>Spotify linked for this server. Connect device: <strong>${deviceName}</strong>.</p>` +
-                    `<p>Join a voice channel if the bot is not already in one, then choose that device in the Spotify app.</p>` +
-                    (isActive(pending.guildId)
-                        ? '<p>Connect speaker is running in voice.</p>'
-                        : '')
+                    (connectError
+                        ? `<p><strong>Connect device failed to start:</strong> ${connectError.message}</p>`
+                        : isActive(pending.guildId)
+                          ? '<p>Connect device is running — open Spotify → Connect and pick it.</p>'
+                          : '<p>Connect device did not stay running. Check the bot console.</p>') +
+                    (diag.lastLog && connectError
+                        ? `<p><small>${diag.lastLog}</small></p>`
+                        : '') +
+                    `<p>Use <strong>/joinvc</strong> so playback is heard in Discord.</p>`
             );
 
             try {

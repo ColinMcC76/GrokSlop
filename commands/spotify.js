@@ -10,7 +10,13 @@ const {
     defaultDeviceName,
 } = require('../services/spotifyAuth');
 const { createOAuthState } = require('../services/spotifyOAuthServer');
-const { stopGuild, isActive } = require('../services/spotifyConnect');
+const {
+    stopGuild,
+    isActive,
+    ensureConnectDevice,
+    getDiagnostics,
+    getConnectMode,
+} = require('../services/spotifyConnect');
 const { getConnectionData } = require('../services/voiceManager');
 const { isRealtimeActive } = require('../services/realtimeVoiceBridge');
 
@@ -69,9 +75,8 @@ module.exports = {
             await interaction.reply({
                 content:
                     `Open this link to authorize Spotify (**Premium** required):\n${url}\n\n` +
-                    `After linking, join a voice channel (or use **/joinvc**). ` +
-                    `In the Spotify app, open **Connect to a device** and choose **${defaultDeviceName()}**. ` +
-                    `Control playlists from your phone as usual.`,
+                    `After linking, **${defaultDeviceName()}** should appear under Spotify → **Connect to a device** (same Premium account). ` +
+                    `Use **/joinvc** so audio is heard in Discord.`,
                 flags: MessageFlags.Ephemeral,
             });
             return;
@@ -100,25 +105,40 @@ module.exports = {
 
         if (sub === 'status') {
             const row = getGuildSpotifyRow(guildId);
+            if (row && !isActive(guildId)) {
+                try {
+                    await ensureConnectDevice(guildId);
+                } catch (e) {
+                    console.error('[spotify] status ensureConnectDevice:', e);
+                }
+            }
+
+            const diag = getDiagnostics(guildId);
             const inVoice = Boolean(getConnectionData(guildId));
+            const mode = getConnectMode(guildId);
+
             const lines = [
                 row
-                    ? `**Linked** (device name: **${row.device_name || defaultDeviceName()}**).`
+                    ? `**Linked** (device name: **${diag.deviceName}**).`
                     : '**Not linked.** Use `/spotify link`.',
-                inVoice
-                    ? 'Bot is **in a voice channel**.'
-                    : 'Bot is **not in voice** — use `/joinvc` so audio can play here.',
                 isActive(guildId)
-                    ? '**Connect speaker** is active (choose this device in the Spotify app).'
-                    : row && inVoice
-                      ? 'Linked, but speaker is not running — try `/joinvc` again.'
-                      : row
-                        ? 'Speaker starts when the bot joins voice.'
-                        : '',
+                    ? `**Connect device running** (mode: ${mode ?? 'unknown'}). Look for **${diag.deviceName}** in Spotify → Connect.`
+                    : row
+                      ? `**Connect device not running.** Install **librespot** on the bot PC and set \`LIBRESPOT_PATH\` if needed.`
+                      : '',
+                diag.lastLog && !isActive(guildId)
+                    ? `Last librespot log: \`${diag.lastLog}\``
+                    : '',
+                inVoice
+                    ? 'Bot is **in a voice channel** (Discord audio when you play on the Connect device).'
+                    : 'Bot is **not in voice** — use `/joinvc` to hear playback in Discord.',
+                row
+                    ? 'Use the **same Spotify Premium account** you linked when picking the device.'
+                    : '',
             ].filter(Boolean);
 
             await interaction.reply({
-                content: lines.join('\n'),
+                content: lines.join('\n').slice(0, 1900),
                 flags: MessageFlags.Ephemeral,
             });
         }

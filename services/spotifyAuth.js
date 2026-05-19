@@ -3,12 +3,12 @@ const db = require('../storage/db');
 const SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize';
 const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
 
+/** Scopes for Connect (librespot). Avoid `streaming` — Web Playback only, can break librespot login. */
 const SCOPES = [
     'user-read-playback-state',
     'user-modify-playback-state',
     'user-read-email',
     'user-read-private',
-    'streaming',
 ].join(' ');
 
 const upsertGuildSpotify = db.prepare(`
@@ -194,6 +194,13 @@ function removeGuildSpotify(guildId) {
     deleteGuildSpotify.run(guildId);
 }
 
+function listLinkedGuildIds() {
+    return db
+        .prepare('SELECT guild_id FROM guild_spotify')
+        .all()
+        .map((r) => r.guild_id);
+}
+
 function isConfigured() {
     return Boolean(
         process.env.SPOTIFY_CLIENT_ID?.trim() &&
@@ -209,6 +216,7 @@ module.exports = {
     getValidAccessToken,
     getGuildSpotifyRow,
     removeGuildSpotify,
+    listLinkedGuildIds,
     isConfigured,
     defaultDeviceName,
 };
