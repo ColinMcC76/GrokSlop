@@ -1,8 +1,4 @@
-const {
-    SlashCommandBuilder,
-    MessageFlags,
-    PermissionFlagsBits,
-} = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const {
     buildAuthorizeUrl,
     getGuildSpotifyRow,
