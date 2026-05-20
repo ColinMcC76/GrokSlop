@@ -1,8 +1,4 @@
-const {
-    SlashCommandBuilder,
-    MessageFlags,
-    PermissionFlagsBits,
-} = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const {
     buildAuthorizeUrl,
     getGuildSpotifyRow,
@@ -44,18 +40,6 @@ module.exports = {
                 await interaction.reply({
                     content:
                         'Spotify is not configured on the bot host (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`).',
-                    flags: MessageFlags.Ephemeral,
-                });
-                return;
-            }
-
-            if (
-                !interaction.memberPermissions.has(
-                    PermissionFlagsBits.ManageGuild
-                )
-            ) {
-                await interaction.reply({
-                    content: 'You need **Manage Server** to link Spotify.',
                     flags: MessageFlags.Ephemeral,
                 });
                 return;
