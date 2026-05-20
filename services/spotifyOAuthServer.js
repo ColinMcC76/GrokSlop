@@ -51,6 +51,39 @@ function pruneStates() {
 }
 
 /**
+ * @param {string} err Spotify ?error= value
+ */
+function spotifyErrorHelpHtml(err) {
+    const base = `<p><strong>Spotify authorization failed:</strong> <code>${err}</code></p>`;
+
+    if (err === 'server_error') {
+        return (
+            base +
+            `<p>Spotify’s login server failed during authorization (your redirect URL is working).</p>
+            <p><strong>Most common fix — Development Mode allowlist:</strong></p>
+            <ol>
+              <li>Open the <a href="https://developer.spotify.com/dashboard">Spotify Developer Dashboard</a>.</li>
+              <li>Select the <strong>same app</strong> as <code>SPOTIFY_CLIENT_ID</code> in the bot’s <code>.env</code>.</li>
+              <li>Go to <strong>Settings</strong> → <strong>User Management</strong> (or Users and Access).</li>
+              <li>Add the <strong>exact email</strong> of the Spotify Premium account used to log in.</li>
+              <li>Save, wait a minute, run <code>/spotify link</code> again (incognito helps).</li>
+            </ol>
+            <p>Also check: app not suspended, correct Client Secret in <code>.env</code>, try again later if Spotify is having an outage.</p>
+            <p>If the address bar has <code>code=</code> and <code>state=</code> instead of <code>error=</code>, use <code>/spotify finish</code> in Discord with the full URL.</p>`
+        );
+    }
+
+    if (err === 'access_denied') {
+        return (
+            base +
+            '<p>You cancelled login or this Spotify account is not allowed for this app (Development Mode allowlist).</p>'
+        );
+    }
+
+    return base + '<p>Run <code>/spotify link</code> again or use <code>/spotify finish</code> with the browser URL if login succeeded.</p>';
+}
+
+/**
  * @param {string} raw
  * @returns {{ code: string, state: string }}
  */
@@ -227,8 +260,14 @@ function startSpotifyOAuthServer(client) {
 
             const err = url.searchParams.get('error');
             if (err) {
+                console.error(
+                    '[spotify] OAuth callback error from Spotify:',
+                    err,
+                    url.searchParams.get('error_description') || '',
+                    req.url
+                );
                 res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-                res.end(`<p>Spotify authorization failed: ${err}</p>`);
+                res.end(spotifyErrorHelpHtml(err));
                 return;
             }
 

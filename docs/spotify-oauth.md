@@ -41,3 +41,16 @@ Spotify cannot redirect into Discord. The bot can **DM** the user after a succes
 
 - Redirect URI matches `.env` `SPOTIFY_REDIRECT_URI` exactly.
 - For production/public apps, Spotify prefers **HTTPS** (localhost HTTP is fine for dev on the bot PC).
+
+## `server_error` after login
+
+If the browser shows **Spotify authorization failed: server_error**, the tunnel and redirect URI are usually correct — Spotify failed during login.
+
+**Most common cause:** the app is in **Development Mode** and the Spotify user is not on the allowlist.
+
+1. [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) → your app.
+2. **Settings** → **User Management** (Users and Access).
+3. **Add** the email address of the Premium account used in the browser.
+4. Save, wait ~1 minute, try `/spotify link` again (incognito).
+
+Also verify `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` match that same app (reset secret if unsure).
