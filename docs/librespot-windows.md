@@ -71,7 +71,9 @@ SPOTIFY_DEVICE_NAME=GrokSlop
 
 Restart the bot: `node .\index.js`
 
-Then `/spotify link` again (or `/spotify status` to start the Connect device).
+Then **`/spotify link` again** (required after scope/token flag updates) or `/spotify status`.
+
+GrokSlop passes your OAuth token with librespot’s **`--access-token`** flag (not `--token`). If you set `LIBRESPOT_TOKEN_FLAG` manually, use `--access-token`.
 
 ## 6. Optional: add to PATH
 
