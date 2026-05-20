@@ -3,12 +3,13 @@ const db = require('../storage/db');
 const SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize';
 const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
 
-/** Scopes for Connect (librespot). Avoid `streaming` — Web Playback only, can break librespot login. */
+/** librespot --access-token requires the streaming scope (see librespot wiki). */
 const SCOPES = [
     'user-read-playback-state',
     'user-modify-playback-state',
     'user-read-email',
     'user-read-private',
+    'streaming',
 ].join(' ');
 
 const upsertGuildSpotify = db.prepare(`

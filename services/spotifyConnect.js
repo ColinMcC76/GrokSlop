@@ -11,7 +11,8 @@ const {
 } = require('./spotifyAuth');
 
 const LIBRESPOT_BIN = process.env.LIBRESPOT_PATH || 'librespot';
-const TOKEN_FLAG = process.env.LIBRESPOT_TOKEN_FLAG || '--token';
+/** librespot 0.8+ uses --access-token (-k), not --token */
+const TOKEN_FLAG = process.env.LIBRESPOT_TOKEN_FLAG || '--access-token';
 const PCM_RATE = Number(process.env.SPOTIFY_PCM_RATE) || 44100;
 const PCM_CHANNELS = 2;
 
@@ -160,7 +161,7 @@ function wireLibrespotLogs(guildId, librespot, rt) {
         if (err.code === 'ENOENT') {
             console.error(
                 `[spotify:${guildId}] librespot not found at "${LIBRESPOT_BIN}". ` +
-                    'Install from https://github.com/librespot-org/librespot/releases and set LIBRESPOT_PATH.'
+                    'Windows: build librespot.exe (see docs/librespot-windows.md) and set LIBRESPOT_PATH in .env.'
             );
         } else {
             console.error(`[spotify:${guildId}] librespot error:`, err);
