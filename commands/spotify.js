@@ -49,18 +49,6 @@ module.exports = {
                 return;
             }
 
-            if (
-                !interaction.memberPermissions.has(
-                    PermissionFlagsBits.ManageGuild
-                )
-            ) {
-                await interaction.reply({
-                    content: 'You need **Manage Server** to link Spotify.',
-                    flags: MessageFlags.Ephemeral,
-                });
-                return;
-            }
-
             if (isRealtimeActive(guildId)) {
                 await interaction.reply({
                     content: 'Turn off realtime voice (/talkoff) before starting Spotify Connect.',
