@@ -220,4 +220,5 @@ module.exports = {
     listLinkedGuildIds,
     isConfigured,
     defaultDeviceName,
+    redirectUri,
 };
