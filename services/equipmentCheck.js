@@ -13,6 +13,13 @@ const DEFAULT_PING_ROLE_NAMES = [
 /** Role granted to reactors after the window. Override: EQUIPMENT_CHECK_EQUIPPED_ROLE=name */
 const DEFAULT_EQUIPPED_ROLE_NAME = 'equipped';
 
+/** Roles allowed to run /equipmentcheck. Override: EQUIPMENT_CHECK_CALLER_ROLE_IDS=comma-separated */
+const DEFAULT_CALLER_ROLE_IDS = [
+    '1231054841288200242', // Equipment Maintenance Authority Executive
+    '1231056026329940000', // Equipment Maintenance Authority Chief
+    '1231056051370197062', // Equipment Maintenance Authority Deputy
+];
+
 const CHECK_DURATION_MS = 5 * 60 * 1000;
 const COUNTDOWN_EDIT_MS = 10_000;
 const REACTION_EMOJI = '✅';
@@ -50,6 +57,27 @@ function equippedRoleName() {
         process.env.EQUIPMENT_CHECK_EQUIPPED_ROLE?.trim() ||
         DEFAULT_EQUIPPED_ROLE_NAME
     );
+}
+
+function parseCallerRoleIds() {
+    const raw = process.env.EQUIPMENT_CHECK_CALLER_ROLE_IDS;
+    if (raw && raw.trim()) {
+        return raw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+    }
+    return DEFAULT_CALLER_ROLE_IDS;
+}
+
+/**
+ * @param {import('discord.js').GuildMember | null} member
+ */
+function canRunEquipmentCheck(member) {
+    if (!member) {
+        return false;
+    }
+    return parseCallerRoleIds().some((id) => member.roles.cache.has(id));
 }
 
 /**
@@ -364,6 +392,7 @@ async function runEquipmentCheck(interaction, optionalPrompt) {
 
 module.exports = {
     runEquipmentCheck,
+    canRunEquipmentCheck,
     REACTION_EMOJI,
     CHECK_DURATION_MS,
 };

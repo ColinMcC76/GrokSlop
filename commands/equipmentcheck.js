@@ -1,9 +1,8 @@
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const {
-    SlashCommandBuilder,
-    MessageFlags,
-    PermissionFlagsBits,
-} = require('discord.js');
-const { runEquipmentCheck } = require('../services/equipmentCheck');
+    runEquipmentCheck,
+    canRunEquipmentCheck,
+} = require('../services/equipmentCheck');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -11,7 +10,6 @@ module.exports = {
         .setDescription(
             'Post an equipment check — ping EMA roles, collect ✅ reactions, grant equipped'
         )
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .addStringOption((option) =>
             option
                 .setName('prompt')
@@ -22,6 +20,16 @@ module.exports = {
                 .setMaxLength(500)
         ),
     async execute(interaction) {
+        const member = interaction.member;
+        if (!canRunEquipmentCheck(member)) {
+            await interaction.reply({
+                content:
+                    'You need **Equipment Maintenance Authority Executive**, **Chief**, or **Deputy** to run this command.',
+                flags: MessageFlags.Ephemeral,
+            });
+            return;
+        }
+
         const prompt = interaction.options.getString('prompt');
 
         await interaction.deferReply({
