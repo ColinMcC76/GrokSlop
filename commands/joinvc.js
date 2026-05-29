@@ -31,10 +31,17 @@ module.exports = {
             await interaction.editReply(`Joined **${voiceChannel.name}**`);
         } catch (err) {
             console.error('[joinvc] voice connection failed:', err);
-            const msg =
-                err?.name === 'AbortError' || err?.code === 'ABORT_ERR'
-                    ? 'Timed out connecting to voice. Check bot **Connect** / **Speak** permissions and try again.'
-                    : `Could not join voice: ${err.message || err}`;
+            const raw = err?.message || String(err);
+            let msg;
+            if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR') {
+                msg =
+                    'Timed out connecting to voice. Check bot **Connect** / **Speak** permissions and try again.';
+            } else if (/521|502|503|504|Unexpected server response/i.test(raw)) {
+                msg =
+                    'Discord voice gateway returned a temporary error (often network or Cloudflare). Try `/joinvc` again in a few seconds.';
+            } else {
+                msg = `Could not join voice: ${raw}`;
+            }
             await interaction.editReply(msg);
         }
     }
