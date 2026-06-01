@@ -14,6 +14,7 @@ function buildPrompt({
     guildMemory,
     userMemory,
     attachments,
+    attachmentWarnings = [],
 }) {
     const recentBlock = recentMessages
         .map(m => {
@@ -31,18 +32,32 @@ function buildPrompt({
         : 'None';
 
     const attachmentBlock = attachments.length
-        ? attachments.map(a => {
-            if (a.type === 'text') {
-                return `[Text attachment: ${a.name}]\n${truncate(a.content, 2500)}`;
-            }
+        ? attachments
+              .map((a) => {
+                  if (a.type === 'text' || a.type === 'document') {
+                      const label =
+                          a.type === 'document'
+                              ? `${(a.format || 'file').toUpperCase()} document`
+                              : 'Text attachment';
+                      const truncNote = a.truncated
+                          ? ' (content was truncated)'
+                          : '';
+                      return `[${label}: ${a.name}${truncNote}]\n${truncate(a.content, 4000)}`;
+                  }
 
-            if (a.type === 'image') {
-                return `[Image attachment: ${a.name}] ${a.url}`;
-            }
+                  if (a.type === 'image') {
+                      return `[Image attachment: ${a.name}] ${a.url}`;
+                  }
 
-            return '';
-        }).join('\n\n')
+                  return '';
+              })
+              .filter(Boolean)
+              .join('\n\n')
         : 'None';
+
+    const attachmentWarningBlock = attachmentWarnings.length
+        ? attachmentWarnings.map((w) => `- ${w}`).join('\n')
+        : '';
 
     const customPersona = guildId ? getActivePromptText(guildId) : null;
 
@@ -66,6 +81,8 @@ ${message.content || '(no text content)'}
 
 Attachments:
 ${attachmentBlock}
+${attachmentWarningBlock ? `\nAttachment notes:\n${attachmentWarningBlock}\n` : ''}
+If document text is included above, use it to answer the user. Mention if something could not be read.
 
 Write a Discord reply that fits the vibe and answers the user.
 Do not mention hidden memory unless naturally relevant.

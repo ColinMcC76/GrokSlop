@@ -46,7 +46,8 @@ module.exports = {
 
             await message.channel.sendTyping();
 
-            const attachments = await extractAttachments(message);
+            const { attachments, warnings: attachmentWarnings } =
+                await extractAttachments(message);
             const recentMessages = getRecentMessages(message.channel.id);
             const guildMemory = getGuildMemory(message.guild.id);
             const userMemory = getUserMemory(message.guild.id, message.author.id);
@@ -61,7 +62,8 @@ module.exports = {
                 recentMessages,
                 guildMemory,
                 userMemory,
-                attachments
+                attachments,
+                attachmentWarnings,
             });
 
             const result = await generateResponse({
