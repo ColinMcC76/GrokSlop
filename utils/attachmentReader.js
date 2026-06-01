@@ -1,9 +1,36 @@
 const config = require('../config');
-const pdfParse = require('pdf-parse');
-const mammoth = require('mammoth');
-const XLSX = require('xlsx');
 
 /** @typedef {'pdf' | 'docx' | 'xlsx' | 'xls' | 'csv'} DocumentFormat */
+
+const INSTALL_HINT =
+    'Run `npm install` in the bot folder (needs pdf-parse, mammoth, xlsx).';
+
+/**
+ * @param {string} packageName
+ */
+function requireDocumentModule(packageName) {
+    try {
+        return require(packageName);
+    } catch (err) {
+        if (err?.code === 'MODULE_NOT_FOUND') {
+            throw new Error(INSTALL_HINT);
+        }
+        throw err;
+    }
+}
+
+function getPdfParse() {
+    const mod = requireDocumentModule('pdf-parse');
+    return typeof mod === 'function' ? mod : mod.default;
+}
+
+function getMammoth() {
+    return requireDocumentModule('mammoth');
+}
+
+function getXlsx() {
+    return requireDocumentModule('xlsx');
+}
 
 /**
  * @param {import('discord.js').Attachment} attachment
@@ -121,6 +148,7 @@ async function readTextAttachment(attachment) {
  * @param {Buffer} buf
  */
 async function extractPdfText(buf) {
+    const pdfParse = getPdfParse();
     const data = await pdfParse(buf);
     return data.text || '';
 }
@@ -129,6 +157,7 @@ async function extractPdfText(buf) {
  * @param {Buffer} buf
  */
 async function extractDocxText(buf) {
+    const mammoth = getMammoth();
     const result = await mammoth.extractRawText({ buffer: buf });
     return result.value || '';
 }
@@ -137,6 +166,7 @@ async function extractDocxText(buf) {
  * @param {Buffer} buf
  */
 function extractSpreadsheetText(buf) {
+    const XLSX = getXlsx();
     const workbook = XLSX.read(buf, {
         type: 'buffer',
         cellDates: true,
