@@ -8,6 +8,20 @@ module.exports = {
     once: true,
     execute(client) {
         console.log(`Grokslop is online as ${client.user.tag}`);
+
+        try {
+            require('pdf-parse');
+            require('mammoth');
+            require('xlsx');
+            console.log(
+                '[attachments] PDF, DOCX, and Excel reading enabled'
+            );
+        } catch {
+            console.warn(
+                '[attachments] Document reading disabled — run `npm install` in the bot folder'
+            );
+        }
+
         startSpotifyOAuthServer(client);
 
         if (isConfigured()) {
