@@ -90,6 +90,13 @@ function migrate() {
             linked_by TEXT,
             updated_at INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS user_intro_songs (
+            user_id TEXT PRIMARY KEY,
+            query TEXT NOT NULL,
+            title TEXT,
+            updated_at INTEGER NOT NULL
+        );
     `);
 }
 
