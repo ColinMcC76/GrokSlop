@@ -33,7 +33,7 @@ function isPlayDlInstalled() {
 }
 
 /**
- * @typedef {{ url: string, title: string | null }} QueueItem
+ * @typedef {{ url: string, title: string | null, intro?: boolean, introUser?: string }} QueueItem
  * @typedef {{
  *   items: QueueItem[],
  *   player: import('@discordjs/voice').AudioPlayer,
@@ -390,9 +390,16 @@ async function playCurrentTrack(state) {
 
         if (state.textChannel) {
             try {
-                await state.textChannel.send(
-                    `Now playing: **${item.title}**\n${item.url}`
-                );
+                if (item.intro) {
+                    const who = item.introUser || 'Someone';
+                    await state.textChannel.send(
+                        `🎵 **${who}** rolled up with **${item.title}**`
+                    );
+                } else {
+                    await state.textChannel.send(
+                        `Now playing: **${item.title}**\n${item.url}`
+                    );
+                }
             } catch {}
         }
 
@@ -463,6 +470,87 @@ async function enqueue(guildId, player, textChannel, query) {
     }
 
     return { added: items.length, titles: items.map((i) => i.title) };
+}
+
+/**
+ * Resolve a single YouTube track (search, URL, or first video from a playlist link).
+ * @param {string} query
+ * @returns {Promise<QueueItem>}
+ */
+async function resolveSingleTrack(query) {
+    const items = await resolveToQueueItems(query);
+    if (!items.length) {
+        throw new Error('No YouTube results found.');
+    }
+    return items[0];
+}
+
+/**
+ * Queue an intro at the front — interrupts current playback if needed.
+ * @param {string} guildId
+ * @param {import('@discordjs/voice').AudioPlayer} player
+ * @param {import('discord.js').TextBasedChannel | null} textChannel
+ * @param {string} query
+ * @param {{ displayName?: string }} [meta]
+ */
+async function enqueueIntro(guildId, player, textChannel, query, meta = {}) {
+    const state = getOrCreateState(guildId, player);
+    if (textChannel) {
+        state.textChannel = textChannel;
+    }
+
+    const track = await resolveSingleTrack(query);
+    track.intro = true;
+    track.introUser = meta.displayName || 'Someone';
+
+    state.items.unshift(track);
+
+    if (state.player.state.status !== AudioPlayerStatus.Idle) {
+        state.generation += 1;
+        killYtdlpChild(state);
+        try {
+            state.player.stop(true);
+        } catch {}
+    }
+
+    chainDrain(state, () => playCurrentTrack(state));
+
+    return { title: track.title, url: track.url };
+}
+
+/**
+ * Play a resolved queue item as an intro (already stored URL/search).
+ * @param {string} guildId
+ * @param {import('@discordjs/voice').AudioPlayer} player
+ * @param {import('discord.js').TextBasedChannel | null} textChannel
+ * @param {QueueItem} track
+ * @param {{ displayName?: string }} [meta]
+ */
+function enqueueIntroTrack(guildId, player, textChannel, track, meta = {}) {
+    const state = getOrCreateState(guildId, player);
+    if (textChannel) {
+        state.textChannel = textChannel;
+    }
+
+    const item = {
+        url: track.url,
+        title: track.title,
+        intro: true,
+        introUser: meta.displayName || 'Someone',
+    };
+    state.items.unshift(item);
+
+    if (state.player.state.status !== AudioPlayerStatus.Idle) {
+        state.generation += 1;
+        killYtdlpChild(state);
+        try {
+            state.player.stop(true);
+        } catch {}
+    }
+
+    chainDrain(state, () => playCurrentTrack(state));
+
+    return { title: item.title, url: item.url };
 }
 
 /**
@@ -582,6 +670,9 @@ function getYoutubeVolume(guildId) {
 
 module.exports = {
     enqueue,
+    enqueueIntro,
+    enqueueIntroTrack,
+    resolveSingleTrack,
     skip,
     stopAndClear,
     removeGuild,
