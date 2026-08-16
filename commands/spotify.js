@@ -8,6 +8,7 @@ const {
     beginSpotifyLink,
     finishSpotifyLink,
     parseRedirectInput,
+    findPendingStateForGuildUser,
 } = require('../services/spotifyOAuthServer');
 const {
     stopGuild,
@@ -76,14 +77,13 @@ module.exports = {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             try {
-                const url = await beginSpotifyLink(
+                const linkUrl = await beginSpotifyLink(
                     guildId,
                     interaction.user.id
                 );
                 await interaction.editReply(
-                    `Open this link to authorize Spotify (**Premium** required):\n${url}\n\n` +
-                        'After you approve, the browser will usually show **connection refused** — that is **normal**.\n' +
-                        'Copy the **entire** address bar (looks like `http://127.0.0.1/login?code=...`) and run **/spotify finish**.\n\n' +
+                    `Open this link to link Spotify (**Premium** required):\n${linkUrl}\n\n` +
+                        'It will send you to Spotify, then show a page where you paste the browser URL to finish (same as before, but on your site instead of Discord).\n\n' +
                         `Then pick **${defaultDeviceName()}** in Spotify → **Connect**, and use **/joinvc** for Discord audio.`
                 );
             } catch (err) {
@@ -99,23 +99,22 @@ module.exports = {
 
             try {
                 const raw = interaction.options.getString('redirect', true);
-                let state;
-                try {
-                    if (!/127\.0\.0\.1\/login|localhost\/login/i.test(raw)) {
-                        ({ state } = parseRedirectInput(raw));
-                    }
-                } catch {
-                    /* librespot redirect may not include our state */
+                parseRedirectInput(raw);
+
+                let state = findPendingStateForGuildUser(
+                    guildId,
+                    interaction.user.id
+                );
+                if (!state) {
+                    throw new Error(
+                        'No pending login for this server. Run `/spotify link` first, or finish on the website link page.'
+                    );
                 }
 
                 const result = await finishSpotifyLink(
                     interaction.client,
                     raw,
-                    state,
-                    {
-                        expectedUserId: interaction.user.id,
-                        guildId,
-                    }
+                    state
                 );
 
                 await interaction.editReply({
