@@ -1,11 +1,16 @@
 const http = require('node:http');
 const {
-    exchangeCodeForTokens,
-    saveGuildTokens,
-    isConfigured,
+    isWebApiConfigured,
     defaultDeviceName,
     redirectUri,
+    markGuildLinkedWithLibrespot,
 } = require('./spotifyAuth');
+const {
+    startHeadlessOAuth,
+    completeHeadlessOAuth,
+    isLibrespotOAuthPending,
+    normalizeLibrespotRedirect,
+} = require('./spotifyLibrespotOAuth');
 
 /** @type {Map<string, { guildId: string, userId: string, createdAt: number }>} */
 const pendingStates = new Map();
@@ -143,6 +148,123 @@ async function notifyLinker(client, pending, content) {
 
 /**
  * @param {import('discord.js').Client | null} client
+ * @param {string} guildId
+ * @param {string} userId
+ */
+async function completeLibrespotLink(client, guildId, userId) {
+    const {
+        ensureConnectDevice,
+        attachIfLinkedInVoice,
+        isActive,
+    } = require('./spotifyConnect');
+
+    markGuildLinkedWithLibrespot(guildId, userId);
+
+    let connectError = null;
+    try {
+        await ensureConnectDevice(guildId);
+    } catch (e) {
+        connectError = e;
+        console.error('[spotify] ensureConnectDevice after link:', e);
+    }
+
+    const { getConnectionData } = require('./voiceManager');
+    const conn = getConnectionData(guildId);
+    if (conn?.player) {
+        try {
+            await attachIfLinkedInVoice(guildId, conn.player);
+        } catch (e) {
+            console.error('[spotify] attach voice after link:', e);
+        }
+    }
+
+    const deviceName = defaultDeviceName();
+    const lines = [
+        `Spotify linked for this server. Connect device: **${deviceName}**.`,
+        connectError
+            ? `Connect device failed to start: ${connectError.message}`
+            : isActive(guildId)
+              ? 'Device is running — open Spotify → **Connect** and pick it.'
+              : 'Device did not stay running; check the bot console.',
+        'Use **/joinvc** so playback is heard in Discord.',
+    ];
+
+    const discordMessage = lines.join('\n');
+    await notifyLinker(client, { userId }, discordMessage);
+
+    return {
+        guildId,
+        userId,
+        deviceName,
+        connectError,
+        discordMessage,
+        htmlBody:
+            `<p>Spotify linked. Device: <strong>${deviceName}</strong>.</p>` +
+            (connectError
+                ? `<p><strong>Error:</strong> ${connectError.message}</p>`
+                : isActive(guildId)
+                  ? '<p>Open Spotify → Connect and choose this device.</p>'
+                  : '<p>Check the bot console.</p>') +
+            '<p>You can close this tab and return to Discord.</p>',
+    };
+}
+
+/**
+ * Start librespot headless OAuth for a guild.
+ * @param {string} guildId
+ * @param {string} userId
+ */
+async function beginSpotifyLink(guildId, userId) {
+    createOAuthState(guildId, userId);
+    const url = await startHeadlessOAuth(
+        guildId,
+        userId,
+        defaultDeviceName()
+    );
+    return url;
+}
+
+/**
+ * @param {import('discord.js').Client | null} client
+ * @param {string} redirectRaw
+ * @param {string} [state]
+ * @param {{ expectedUserId?: string, guildId?: string }} [opts]
+ */
+async function finishSpotifyLink(client, redirectRaw, state, opts = {}) {
+    let guildId = opts.guildId;
+    let userId = opts.expectedUserId;
+
+    if (state) {
+        const pending = consumeOAuthState(state);
+        if (!pending) {
+            throw new Error('Link expired or invalid. Run `/spotify link` again.');
+        }
+        if (opts.expectedUserId && pending.userId !== opts.expectedUserId) {
+            throw new Error(
+                'This link was started by someone else. Run `/spotify link` yourself.'
+            );
+        }
+        guildId = pending.guildId;
+        userId = pending.userId;
+    }
+
+    if (!guildId || !userId) {
+        throw new Error('Run `/spotify link` first, then `/spotify finish`.');
+    }
+
+    if (!isLibrespotOAuthPending(guildId)) {
+        throw new Error(
+            'No pending Spotify login for this server. Run `/spotify link` again.'
+        );
+    }
+
+    await completeHeadlessOAuth(guildId, redirectRaw);
+    return completeLibrespotLink(client, guildId, userId);
+}
+
+/**
+ * Legacy Web API callback path (deprecated for Connect).
+ * @param {import('discord.js').Client | null} client
  * @param {string} code
  * @param {string} state
  * @param {{ expectedUserId?: string }} [opts]
@@ -157,84 +279,19 @@ async function completeSpotifyLink(client, code, state, opts = {}) {
         throw new Error('This link was started by someone else. Run `/spotify link` yourself.');
     }
 
-    const tokens = await exchangeCodeForTokens(code);
-    saveGuildTokens(pending.guildId, pending.userId, tokens);
-
-    const { getConnectionData } = require('./voiceManager');
-    const {
-        ensureConnectDevice,
-        attachIfLinkedInVoice,
-        isActive,
-    } = require('./spotifyConnect');
-
-    let connectError = null;
-    try {
-        await ensureConnectDevice(pending.guildId);
-    } catch (e) {
-        connectError = e;
-        console.error('[spotify] ensureConnectDevice after link:', e);
-    }
-
-    const conn = getConnectionData(pending.guildId);
-    if (conn?.player) {
-        try {
-            await attachIfLinkedInVoice(pending.guildId, conn.player);
-        } catch (e) {
-            console.error('[spotify] attach voice after link:', e);
-        }
-    }
-
-    const deviceName = defaultDeviceName();
-    const lines = [
-        `Spotify linked for this server. Connect device: **${deviceName}**.`,
-        connectError
-            ? `Connect device failed to start: ${connectError.message}`
-            : isActive(pending.guildId)
-              ? 'Device is running — open Spotify → **Connect** and pick it.'
-              : 'Device did not stay running; check the bot console.',
-        'Use **/joinvc** so playback is heard in Discord.',
-    ];
-
-    const discordMessage = lines.join('\n');
-
-    await notifyLinker(client, pending, discordMessage);
-
-    try {
-        if (client && process.env.SPOTIFY_NOTIFY_CHANNEL_ID) {
-            const guild = await client.guilds.fetch(pending.guildId);
-            const ch = await guild.channels.fetch(process.env.SPOTIFY_NOTIFY_CHANNEL_ID);
-            if (ch?.isTextBased()) {
-                await ch.send(
-                    `<@${pending.userId}> linked Spotify. Device **${deviceName}** is ready.`
-                );
-            }
-        }
-    } catch {
-        /* optional */
-    }
-
-    return {
-        pending,
-        deviceName,
-        connectError,
-        discordMessage,
-        htmlBody:
-            `<p>Spotify linked. Device: <strong>${deviceName}</strong>.</p>` +
-            (connectError
-                ? `<p><strong>Error:</strong> ${connectError.message}</p>`
-                : isActive(pending.guildId)
-                  ? '<p>Open Spotify → Connect and choose this device.</p>'
-                  : '<p>Check the bot console.</p>') +
-            '<p>You can close this tab and return to Discord.</p>',
-    };
+    throw new Error(
+        'This callback used the old Spotify Web API flow, which no longer works with librespot Connect. Run `/spotify link` again and complete login with `/spotify finish` using the `http://127.0.0.1/login?code=...` URL.'
+    );
 }
 
 /**
  * @param {import('discord.js').Client} client
  */
 function startSpotifyOAuthServer(client) {
-    if (!isConfigured()) {
-        console.log('[spotify] OAuth env not set; /spotify link disabled.');
+    if (!isWebApiConfigured()) {
+        console.log(
+            '[spotify] Web API OAuth env not set; linking uses librespot OAuth via /spotify link.'
+        );
         return;
     }
 
@@ -305,5 +362,8 @@ module.exports = {
     createOAuthState,
     consumeOAuthState,
     parseRedirectInput,
+    beginSpotifyLink,
+    finishSpotifyLink,
     completeSpotifyLink,
+    normalizeLibrespotRedirect,
 };

@@ -1,18 +1,19 @@
 const { spawn } = require('node:child_process');
-const fs = require('node:fs');
-const path = require('node:path');
 const { Writable } = require('node:stream');
 const { createAudioResource, StreamType } = require('@discordjs/voice');
 const ffmpegStatic = require('ffmpeg-static');
 const {
-    getValidAccessToken,
     getGuildSpotifyRow,
     defaultDeviceName,
 } = require('./spotifyAuth');
+const {
+    audioCacheDir,
+    systemCacheDir,
+    hasLibrespotCredentials,
+    clearLibrespotCache,
+} = require('./spotifyLibrespotOAuth');
 
 const LIBRESPOT_BIN = process.env.LIBRESPOT_PATH || 'librespot';
-/** librespot 0.8+ uses --access-token (-k), not --token */
-const TOKEN_FLAG = process.env.LIBRESPOT_TOKEN_FLAG || '--access-token';
 const PCM_RATE = Number(process.env.SPOTIFY_PCM_RATE) || 44100;
 const PCM_CHANNELS = 2;
 
@@ -109,16 +110,16 @@ function createDiscardSink() {
 }
 
 function cacheDir(guildId) {
-    const dir = path.join(__dirname, '..', 'data', 'spotify', guildId);
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
+    return audioCacheDir(guildId);
 }
 
 /**
  * @param {string} guildId
  */
 function isLinked(guildId) {
-    return Boolean(getGuildSpotifyRow(guildId));
+    return (
+        Boolean(getGuildSpotifyRow(guildId)) && hasLibrespotCredentials(guildId)
+    );
 }
 
 /**
@@ -207,9 +208,7 @@ async function stopGuild(guildId, unlink = false) {
     if (unlink) {
         const { removeGuildSpotify } = require('./spotifyAuth');
         removeGuildSpotify(guildId);
-        try {
-            fs.rmSync(cacheDir(guildId), { recursive: true, force: true });
-        } catch {}
+        clearLibrespotCache(guildId);
     }
 }
 
@@ -218,8 +217,8 @@ async function stopGuild(guildId, unlink = false) {
  * @param {string} accessToken
  * @param {string} deviceName
  */
-function buildLibrespotArgs(guildId, accessToken, deviceName) {
-    return [
+function buildLibrespotArgs(guildId, deviceName) {
+    const args = [
         '--name',
         deviceName,
         '--device-type',
@@ -232,10 +231,18 @@ function buildLibrespotArgs(guildId, accessToken, deviceName) {
         '320',
         '--cache',
         cacheDir(guildId),
+        '--system-cache',
+        systemCacheDir(guildId),
         '--disable-discovery',
-        TOKEN_FLAG,
-        accessToken,
     ];
+
+    if (hasLibrespotCredentials(guildId)) {
+        return args;
+    }
+
+    throw new Error(
+        'Spotify credentials missing. Run `/spotify unlink` then `/spotify link` to sign in again.'
+    );
 }
 
 /**
@@ -437,9 +444,13 @@ async function startSession(guildId, mode, player) {
     }
 
     const row = getGuildSpotifyRow(guildId);
-    const accessToken = await getValidAccessToken(guildId);
+    if (!hasLibrespotCredentials(guildId)) {
+        throw new Error(
+            'Spotify is linked in the database but credentials are missing. Run `/spotify link` again.'
+        );
+    }
     const deviceName = row?.device_name || defaultDeviceName();
-    const args = buildLibrespotArgs(guildId, accessToken, deviceName);
+    const args = buildLibrespotArgs(guildId, deviceName);
 
     const librespot = spawn(LIBRESPOT_BIN, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -544,10 +555,25 @@ async function startSession(guildId, mode, player) {
         const checkReady = (chunk) => {
             const line = chunk.toString();
             if (
-                /authenticated|ready|logged in|session/i.test(line) &&
-                isActive(guildId)
+                /INVALID_CREDENTIALS|Bad credentials|could not initialize spirc/i.test(
+                    line
+                )
             ) {
-                finish();
+                clearLibrespotCache(guildId);
+                finish(
+                    new Error(
+                        'Spotify login expired or was rejected. Run `/spotify unlink` then `/spotify link` again (Premium account required).'
+                    )
+                );
+                return;
+            }
+            if (/Authenticated as/i.test(line) && isActive(guildId)) {
+                setTimeout(() => {
+                    if (settled || !isActive(guildId)) {
+                        return;
+                    }
+                    finish();
+                }, 3000);
             }
         };
         librespot.stderr.on('data', checkReady);
@@ -559,23 +585,12 @@ async function startSession(guildId, mode, player) {
 
     rt.tokenRefreshTimer = setInterval(async () => {
         try {
-            if (!isActive(guildId)) {
+            if (!isActive(guildId) || !hasLibrespotCredentials(guildId)) {
                 return;
             }
-            const rowNow = getGuildSpotifyRow(guildId);
-            if (!rowNow || rowNow.expires_at > Date.now() + 10 * 60 * 1000) {
+            if (rt.lastLog && /INVALID_CREDENTIALS|Bad credentials/i.test(rt.lastLog)) {
+                console.warn(`[spotify:${guildId}] credentials invalid; restart skipped`);
                 return;
-            }
-            await getValidAccessToken(guildId);
-            const modeNow = getConnectMode(guildId) || 'standby';
-            const { getConnectionData } = require('./voiceManager');
-            const data = getConnectionData(guildId);
-            console.log(`[spotify:${guildId}] restarting after token refresh`);
-            await stopGuild(guildId, false);
-            if (modeNow === 'discord' && data?.player) {
-                await startSession(guildId, 'discord', data.player);
-            } else {
-                await startSession(guildId, 'standby');
             }
         } catch (e) {
             console.error(`[spotify:${guildId}] token refresh:`, e);
