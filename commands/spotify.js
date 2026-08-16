@@ -9,7 +9,9 @@ const {
     finishSpotifyLink,
     parseRedirectInput,
     findPendingStateForGuildUser,
-} = require('../services/spotifyOAuthServer');
+    getLinkInstructions,
+    getConnectInstructions,
+} = require('../services/spotifyLink');
 const {
     stopGuild,
     isLinked,
@@ -20,6 +22,13 @@ const {
 } = require('../services/spotifyConnect');
 const { getConnectionData } = require('../services/voiceManager');
 const { isRealtimeActive } = require('../services/realtimeVoiceBridge');
+
+function truncateDiscord(content, max = 1950) {
+    if (content.length <= max) {
+        return content;
+    }
+    return `${content.slice(0, max - 1)}…`;
+}
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -46,7 +55,7 @@ module.exports = {
                     o
                         .setName('redirect')
                         .setDescription(
-                            'Full browser URL after login (contains code= and state=)'
+                            'Full browser URL after login (contains code=)'
                         )
                         .setRequired(true)
                         .setMaxLength(2000)
@@ -55,12 +64,13 @@ module.exports = {
     async execute(interaction) {
         const sub = interaction.options.getSubcommand();
         const guildId = interaction.guild.id;
+        const deviceName = defaultDeviceName();
 
         if (sub === 'link') {
             if (!isConfigured()) {
                 await interaction.reply({
                     content:
-                        'Set `LIBRESPOT_PATH` in `.env` to your librespot.exe (see docs/librespot-windows.md).',
+                        'Spotify Connect is not set up on this bot. The host needs `LIBRESPOT_PATH` in `.env` (see docs/librespot-windows.md).',
                     flags: MessageFlags.Ephemeral,
                 });
                 return;
@@ -68,7 +78,7 @@ module.exports = {
 
             if (isRealtimeActive(guildId)) {
                 await interaction.reply({
-                    content: 'Turn off realtime voice (/talkoff) before starting Spotify Connect.',
+                    content: 'Turn off realtime voice (`/talkoff`) before linking Spotify.',
                     flags: MessageFlags.Ephemeral,
                 });
                 return;
@@ -77,14 +87,17 @@ module.exports = {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             try {
-                const linkUrl = await beginSpotifyLink(
+                const { authorizeUrl } = await beginSpotifyLink(
                     guildId,
                     interaction.user.id
                 );
+
                 await interaction.editReply(
-                    `Open this link to link Spotify (**Premium** required):\n${linkUrl}\n\n` +
-                        'It will send you to Spotify, then show a page where you paste the browser URL to finish (same as before, but on your site instead of Discord).\n\n' +
-                        `Then pick **${defaultDeviceName()}** in Spotify → **Connect**, and use **/joinvc** for Discord audio.`
+                    truncateDiscord(
+                        `${getLinkInstructions(deviceName)}\n\n` +
+                            '**Spotify login link** (open in browser):\n' +
+                            authorizeUrl
+                    )
                 );
             } catch (err) {
                 await interaction.editReply({
@@ -101,13 +114,13 @@ module.exports = {
                 const raw = interaction.options.getString('redirect', true);
                 parseRedirectInput(raw);
 
-                let state = findPendingStateForGuildUser(
+                const state = findPendingStateForGuildUser(
                     guildId,
                     interaction.user.id
                 );
                 if (!state) {
                     throw new Error(
-                        'No pending login for this server. Run `/spotify link` first, or finish on the website link page.'
+                        'No pending login for this server. Run `/spotify link` first, then paste the URL here within 15 minutes.'
                     );
                 }
 
@@ -117,9 +130,11 @@ module.exports = {
                     state
                 );
 
-                await interaction.editReply({
-                    content: `Spotify linked.\n${result.discordMessage}`,
-                });
+                await interaction.editReply(
+                    truncateDiscord(
+                        `**Spotify linked.**\n\n${result.discordMessage}`
+                    )
+                );
             } catch (err) {
                 await interaction.editReply({
                     content: err.message || String(err),
@@ -153,28 +168,34 @@ module.exports = {
 
             const lines = [
                 linked
-                    ? `**Linked** (device name: **${diag.deviceName}**).`
+                    ? `**Linked** — Connect device: **${diag.deviceName}**.`
                     : getGuildSpotifyRow(guildId)
                       ? '**Stale link** — credentials missing. Run `/spotify unlink` then `/spotify link`.'
-                      : '**Not linked.** Use `/spotify link`.',
+                      : '**Not linked.** Run `/spotify link` to set up Spotify Connect.',
                 linked && isActive(guildId)
-                    ? `**Connect device running** (mode: ${mode ?? 'unknown'}). Look for **${diag.deviceName}** in Spotify → Connect.`
+                    ? `**Connect device running** (mode: ${mode ?? 'unknown'}).`
                     : linked
-                      ? `**Connect device not running.** ${diag.lastLog ? `Last log: \`${diag.lastLog}\`` : 'Check bot console.'}`
+                      ? `**Connect device not running.** ${diag.lastLog ? `Last log: \`${diag.lastLog}\`` : 'Check the bot console.'}`
                       : '',
                 diag.lastLog && !isActive(guildId)
                     ? `Last librespot log: \`${diag.lastLog}\``
                     : '',
                 inVoice
-                    ? 'Bot is **in a voice channel** (Discord audio when you play on the Connect device).'
-                    : 'Bot is **not in voice** — use `/joinvc` to hear playback in Discord.',
-                linked
-                    ? 'Use the **same Spotify Premium account** you linked when picking the device.'
-                    : '',
+                    ? 'Bot is **in a voice channel** — playback on the Connect device is heard in Discord.'
+                    : 'Bot is **not in voice** — run `/joinvc` before playing.',
             ].filter(Boolean);
 
+            if (linked) {
+                lines.push('', getConnectInstructions(diag.deviceName));
+            } else {
+                lines.push(
+                    '',
+                    '**Setup:** `/spotify link` → log in in browser → copy address bar URL → `/spotify finish`.'
+                );
+            }
+
             await interaction.reply({
-                content: lines.join('\n').slice(0, 1900),
+                content: truncateDiscord(lines.join('\n')),
                 flags: MessageFlags.Ephemeral,
             });
         }

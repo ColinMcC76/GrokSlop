@@ -1,5 +1,5 @@
 const { Events } = require('discord.js');
-const { startSpotifyOAuthServer } = require('../services/spotifyOAuthServer');
+const { initSpotifyLink } = require('../services/spotifyLink');
 const { listLinkedGuildIds, isConfigured } = require('../services/spotifyAuth');
 const { ensureConnectDevice } = require('../services/spotifyConnect');
 const { hasLibrespotCredentials } = require('../services/spotifyLibrespotOAuth');
@@ -23,7 +23,7 @@ module.exports = {
             );
         }
 
-        startSpotifyOAuthServer(client);
+        initSpotifyLink(client);
 
         if (isConfigured()) {
             for (const guildId of listLinkedGuildIds()) {
