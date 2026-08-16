@@ -71,9 +71,7 @@ SPOTIFY_DEVICE_NAME=GrokSlop
 
 Restart the bot: `node .\index.js`
 
-Then **`/spotify link` again** (required after scope/token flag updates) or `/spotify status`.
-
-GrokSlop passes your OAuth token with librespot’s **`--access-token`** flag (not `--token`). If you set `LIBRESPOT_TOKEN_FLAG` manually, use `--access-token`.
+Then run **`/spotify link`** in Discord, complete login in your browser, and finish with **`/spotify finish`**. See [spotify-oauth.md](./spotify-oauth.md).
 
 ## 6. Optional: add to PATH
 
