@@ -158,6 +158,24 @@ function saveGuildTokens(guildId, linkedByUserId, tokens) {
 }
 
 /**
+ * Mark guild linked via librespot cached credentials (no Web API tokens).
+ * @param {string} guildId
+ * @param {string} linkedByUserId
+ */
+function markGuildLinkedWithLibrespot(guildId, linkedByUserId) {
+    const existing = selectGuildSpotify.get(guildId);
+    upsertGuildSpotify.run({
+        guildId,
+        accessToken: 'librespot-cache',
+        refreshToken: 'librespot-cache',
+        expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000,
+        deviceName: existing?.device_name || defaultDeviceName(),
+        linkedBy: linkedByUserId,
+        updatedAt: Date.now(),
+    });
+}
+
+/**
  * @param {string} guildId
  * @returns {Promise<string>}
  */
@@ -203,6 +221,10 @@ function listLinkedGuildIds() {
 }
 
 function isConfigured() {
+    return Boolean(process.env.LIBRESPOT_PATH?.trim() || 'librespot');
+}
+
+function isWebApiConfigured() {
     return Boolean(
         process.env.SPOTIFY_CLIENT_ID?.trim() &&
             process.env.SPOTIFY_CLIENT_SECRET?.trim() &&
@@ -214,11 +236,13 @@ module.exports = {
     buildAuthorizeUrl,
     exchangeCodeForTokens,
     saveGuildTokens,
+    markGuildLinkedWithLibrespot,
     getValidAccessToken,
     getGuildSpotifyRow,
     removeGuildSpotify,
     listLinkedGuildIds,
     isConfigured,
+    isWebApiConfigured,
     defaultDeviceName,
     redirectUri,
 };

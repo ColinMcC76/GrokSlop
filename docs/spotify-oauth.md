@@ -4,7 +4,23 @@ Spotify always sends the user’s browser to your **redirect URI** after login. 
 
 `http://127.0.0.1:3921/spotify/callback` only works when the browser is on the **same PC as the bot**. Discord users on other networks cannot use that URL directly.
 
-## Option A — Public HTTPS redirect (best for many users)
+## Linking (librespot OAuth — required for Connect)
+
+Spotify Connect uses **librespot’s own OAuth**, not the Spotify Developer Dashboard Web API tokens. Those old tokens cause `INVALID_CREDENTIALS` at startup.
+
+1. Run **`/spotify link`** in Discord.
+2. Open the **Browse to:** URL in a browser (Premium account).
+3. After login, the browser shows **connection refused** — copy the full URL (`http://127.0.0.1/login?code=...`).
+4. Run **`/spotify finish`** and paste that URL.
+5. **`/joinvc`**, then in Spotify pick **GrokSlop** under Connect.
+
+Set `LIBRESPOT_PATH` in `.env` to your `librespot.exe`.
+
+If Connect fails after an old link, run **`/spotify unlink`** then link again.
+
+## Legacy Web API redirect (optional)
+
+The `SPOTIFY_CLIENT_ID` / callback server is optional and no longer used for Connect login.
 
 1. Expose the bot’s OAuth port to the internet, e.g.:
    - Bot on a VPS: open port `3921` or reverse-proxy `/spotify/callback` to it.

@@ -1,17 +1,17 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const {
-    buildAuthorizeUrl,
     getGuildSpotifyRow,
-    isConfigured,
     defaultDeviceName,
+    isConfigured,
 } = require('../services/spotifyAuth');
 const {
-    createOAuthState,
+    beginSpotifyLink,
+    finishSpotifyLink,
     parseRedirectInput,
-    completeSpotifyLink,
 } = require('../services/spotifyOAuthServer');
 const {
     stopGuild,
+    isLinked,
     isActive,
     ensureConnectDevice,
     getDiagnostics,
@@ -59,7 +59,7 @@ module.exports = {
             if (!isConfigured()) {
                 await interaction.reply({
                     content:
-                        'Spotify is not configured on the bot host (`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`).',
+                        'Set `LIBRESPOT_PATH` in `.env` to your librespot.exe (see docs/librespot-windows.md).',
                     flags: MessageFlags.Ephemeral,
                 });
                 return;
@@ -73,39 +73,49 @@ module.exports = {
                 return;
             }
 
-            const state = createOAuthState(guildId, interaction.user.id);
-            const url = buildAuthorizeUrl(state, guildId, interaction.user.id);
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-            await interaction.reply({
-                content:
+            try {
+                const url = await beginSpotifyLink(
+                    guildId,
+                    interaction.user.id
+                );
+                await interaction.editReply(
                     `Open this link to authorize Spotify (**Premium** required):\n${url}\n\n` +
-                    `**If the browser cannot reach the bot** (common when \`SPOTIFY_REDIRECT_URI\` is \`127.0.0.1\` and you are not on the bot PC): after login, copy the **entire** address bar and run \`/spotify finish\`.\n\n` +
-                    `Otherwise you should get a success page and a **DM** from me when linking completes.\n\n` +
-                    `Then pick **${defaultDeviceName()}** in Spotify → **Connect to a device**, and use **/joinvc** for Discord audio.`,
-                flags: MessageFlags.Ephemeral,
-            });
+                        `After you approve, the browser will usually show **connection refused** — that is **normal**.\n` +
+                        `Copy the **entire** address bar (looks like \`http://127.0.0.1/login?code=...\`) and run **`/spotify finish`**.\n\n` +
+                        `Then pick **${defaultDeviceName()}** in Spotify → **Connect**, and use **/joinvc** for Discord audio.`
+                );
+            } catch (err) {
+                await interaction.editReply({
+                    content: err.message || String(err),
+                });
+            }
             return;
         }
 
         if (sub === 'finish') {
-            if (!isConfigured()) {
-                await interaction.reply({
-                    content: 'Spotify is not configured on the bot host.',
-                    flags: MessageFlags.Ephemeral,
-                });
-                return;
-            }
-
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             try {
                 const raw = interaction.options.getString('redirect', true);
-                const { code, state } = parseRedirectInput(raw);
-                const result = await completeSpotifyLink(
+                let state;
+                try {
+                    if (!/127\.0\.0\.1\/login|localhost\/login/i.test(raw)) {
+                        ({ state } = parseRedirectInput(raw));
+                    }
+                } catch {
+                    /* librespot redirect may not include our state */
+                }
+
+                const result = await finishSpotifyLink(
                     interaction.client,
-                    code,
+                    raw,
                     state,
-                    { expectedUserId: interaction.user.id }
+                    {
+                        expectedUserId: interaction.user.id,
+                        guildId,
+                    }
                 );
 
                 await interaction.editReply({
@@ -129,8 +139,8 @@ module.exports = {
         }
 
         if (sub === 'status') {
-            const row = getGuildSpotifyRow(guildId);
-            if (row && !isActive(guildId)) {
+            const linked = isLinked(guildId);
+            if (linked && !isActive(guildId)) {
                 try {
                     await ensureConnectDevice(guildId);
                 } catch (e) {
@@ -143,13 +153,15 @@ module.exports = {
             const mode = getConnectMode(guildId);
 
             const lines = [
-                row
+                linked
                     ? `**Linked** (device name: **${diag.deviceName}**).`
-                    : '**Not linked.** Use `/spotify link`.',
-                isActive(guildId)
+                    : getGuildSpotifyRow(guildId)
+                      ? '**Stale link** — credentials missing. Run `/spotify unlink` then `/spotify link`.'
+                      : '**Not linked.** Use `/spotify link`.',
+                linked && isActive(guildId)
                     ? `**Connect device running** (mode: ${mode ?? 'unknown'}). Look for **${diag.deviceName}** in Spotify → Connect.`
-                    : row
-                      ? `**Connect device not running.** Install **librespot** on the bot PC and set \`LIBRESPOT_PATH\` if needed.`
+                    : linked
+                      ? `**Connect device not running.** ${diag.lastLog ? `Last log: \`${diag.lastLog}\`` : 'Check bot console.'}`
                       : '',
                 diag.lastLog && !isActive(guildId)
                     ? `Last librespot log: \`${diag.lastLog}\``
@@ -157,7 +169,7 @@ module.exports = {
                 inVoice
                     ? 'Bot is **in a voice channel** (Discord audio when you play on the Connect device).'
                     : 'Bot is **not in voice** — use `/joinvc` to hear playback in Discord.',
-                row
+                linked
                     ? 'Use the **same Spotify Premium account** you linked when picking the device.'
                     : '',
             ].filter(Boolean);
