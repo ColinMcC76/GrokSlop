@@ -4,23 +4,26 @@ Spotify always sends the user’s browser to your **redirect URI** after login. 
 
 `http://127.0.0.1:3921/spotify/callback` only works when the browser is on the **same PC as the bot**. Discord users on other networks cannot use that URL directly.
 
-## Linking (librespot OAuth — required for Connect)
+## Linking (website flow)
 
-Spotify Connect uses **librespot’s own OAuth**, not the Spotify Developer Dashboard Web API tokens. Those old tokens cause `INVALID_CREDENTIALS` at startup.
+1. Run **`/spotify link`** in Discord — you get one URL like  
+   `https://spotify.mcwhorezone.com/spotify/link?state=...`
+2. That page sends you to Spotify automatically.
+3. After login, the browser shows **connection refused** — copy the full address bar URL.
+4. Paste it on the **same page** and click **Complete linking** — you see **Spotify linked** (and a Discord DM).
+5. **`/joinvc`**, then pick **GrokSlop** in Spotify → Connect.
 
-1. Run **`/spotify link`** in Discord.
-2. Open the **Browse to:** URL in a browser (Premium account).
-3. After login, the browser shows **connection refused** — copy the full URL (`http://127.0.0.1/login?code=...`).
-4. Run **`/spotify finish`** and paste that URL.
-5. **`/joinvc`**, then in Spotify pick **GrokSlop** under Connect.
+Set in `.env`:
 
-Set `LIBRESPOT_PATH` in `.env` to your `librespot.exe`.
+```env
+SPOTIFY_REDIRECT_URI=https://spotify.mcwhorezone.com/spotify/callback
+SPOTIFY_OAUTH_PORT=3921
+LIBRESPOT_PATH=C:\path\to\librespot.exe
+```
 
-If Connect fails after an old link, run **`/spotify unlink`** then link again.
+Cloudflare tunnel must route `spotify.mcwhorezone.com` → `127.0.0.1:3921` (same as before).
 
-## Legacy Web API redirect (optional)
-
-The `SPOTIFY_CLIENT_ID` / callback server is optional and no longer used for Connect login.
+`/spotify finish` in Discord still works as a fallback if you prefer pasting there.
 
 1. Expose the bot’s OAuth port to the internet, e.g.:
    - Bot on a VPS: open port `3921` or reverse-proxy `/spotify/callback` to it.
