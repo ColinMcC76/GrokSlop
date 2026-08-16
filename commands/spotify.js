@@ -82,8 +82,8 @@ module.exports = {
                 );
                 await interaction.editReply(
                     `Open this link to authorize Spotify (**Premium** required):\n${url}\n\n` +
-                        `After you approve, the browser will usually show **connection refused** — that is **normal**.\n` +
-                        `Copy the **entire** address bar (looks like \`http://127.0.0.1/login?code=...\`) and run **`/spotify finish`**.\n\n` +
+                        'After you approve, the browser will usually show **connection refused** — that is **normal**.\n' +
+                        'Copy the **entire** address bar (looks like `http://127.0.0.1/login?code=...`) and run **/spotify finish**.\n\n' +
                         `Then pick **${defaultDeviceName()}** in Spotify → **Connect**, and use **/joinvc** for Discord audio.`
                 );
             } catch (err) {
