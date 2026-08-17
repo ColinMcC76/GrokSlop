@@ -6,6 +6,7 @@ const { extractAttachments } = require('../utils/attachmentReader');
 const { isCoolingDown, startCooldown } = require('../utils/cooldowns');
 const { needsWebSearch } = require('../ai/needsWebSearch');
 const { splitDiscordContent } = require('../utils/discordChunks');
+const { logError } = require('../utils/errorLog');
 
 function shouldRespond(message, clientUserId) {
     if (message.author.bot) return false;
@@ -111,7 +112,11 @@ module.exports = {
                 });
             }
         } catch (error) {
-            console.error('messageCreate handler failed:', error);
+            logError('messageCreate', error, {
+                guildId: message.guild?.id,
+                channelId: message.channel?.id,
+                userId: message.author?.id,
+            });
             await message.reply('I tried to think but the wires crossed.');
         }
     }
