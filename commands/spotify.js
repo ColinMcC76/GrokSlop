@@ -87,16 +87,28 @@ module.exports = {
             await interaction.deferReply();
 
             try {
+                await interaction.editReply(
+                    '**Link Spotify to GrokSlop** — generating login link…'
+                );
+
                 const { authorizeUrl } = await beginSpotifyLink(
                     guildId,
                     interaction.user.id
                 );
 
-                await interaction.editReply(
-                    truncateDiscord(
-                        formatSpotifyLinkMessage(deviceName, authorizeUrl)
-                    )
+                const content = truncateDiscord(
+                    formatSpotifyLinkMessage(deviceName, authorizeUrl)
                 );
+
+                try {
+                    await interaction.editReply(content);
+                } catch {
+                    await interaction.editReply(
+                        '**Link Spotify to GrokSlop** — open this URL on your phone or PC:\n' +
+                            authorizeUrl +
+                            '\n\nThen follow **`/spotify finish`** steps from `/spotify status`.'
+                    );
+                }
             } catch (err) {
                 await interaction.editReply({
                     content: err.message || String(err),
