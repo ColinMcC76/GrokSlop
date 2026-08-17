@@ -19,22 +19,30 @@ const STATE_TTL_MS = 15 * 60 * 1000;
 
 /**
  * @param {string} deviceName
+ * @param {string} authorizeUrl
+ */
+function formatSpotifyLinkMessage(deviceName, authorizeUrl) {
+    return [
+        '**Link Spotify to GrokSlop** (Premium required)',
+        '',
+        '1. **Click this link** and sign in to Spotify:',
+        authorizeUrl,
+        '',
+        '2. After login, the page will **not load** — **connection refused** or **can’t reach this page** is normal.',
+        '3. Copy the **entire URL** from your address bar (`http://127.0.0.1/login?code=...`).',
+        '4. Run **`/spotify finish`** in this server and paste that URL into **`redirect`**.',
+        '',
+        '**Then play in Discord:** run **`/joinvc`**, open Spotify → **Connect to a device** → pick **' +
+            deviceName +
+            '**.',
+    ].join('\n');
+}
+
+/**
+ * @param {string} deviceName
  */
 function getLinkInstructions(deviceName) {
-    return [
-        '**Link Spotify (Premium required)**',
-        '1. Open the Spotify login link below in your browser (phone or PC).',
-        '2. Sign in and approve access.',
-        '3. The page will **not load** afterward — **connection refused** or **can’t reach this page** is normal.',
-        '4. Copy the **entire URL** from the address bar. It looks like `http://127.0.0.1/login?code=...`.',
-        '5. Run **`/spotify finish`** and paste that URL into the `redirect` field.',
-        '',
-        '**After linking — play in Discord**',
-        '1. Run **`/joinvc`** so the bot joins your voice channel.',
-        '2. In Spotify, open **Connect to a device**.',
-        `3. Pick **${deviceName}**.`,
-        '4. Start playback — everyone in the voice channel hears it.',
-    ].join('\n');
+    return formatSpotifyLinkMessage(deviceName, '(run `/spotify link` to get the login URL)');
 }
 
 /**
@@ -291,4 +299,5 @@ module.exports = {
     finishSpotifyLink,
     getLinkInstructions,
     getConnectInstructions,
+    formatSpotifyLinkMessage,
 };
