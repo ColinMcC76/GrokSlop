@@ -300,8 +300,9 @@ function scheduleCountdownEdits(rec) {
 /**
  * @param {import('discord.js').ChatInputCommandInteraction} interaction
  * @param {string | null} optionalPrompt
+ * @param {{ body?: string }} [options]
  */
-async function runEquipmentCheck(interaction, optionalPrompt) {
+async function runEquipmentCheck(interaction, optionalPrompt, options = {}) {
     const guild = interaction.guild;
     if (!guild) {
         throw new Error('This command only works in a server.');
@@ -338,7 +339,7 @@ async function runEquipmentCheck(interaction, optionalPrompt) {
 
     await stripEquippedFromAll(guild, equippedRole);
 
-    const body = await generateBody(guild.id, optionalPrompt);
+    const body = options.body ?? (await generateBody(guild.id, optionalPrompt));
     const mentionLine = pingRoles.map((r) => `<@&${r.id}>`).join(' ');
 
     const closeUnix = Math.floor((Date.now() + CHECK_DURATION_MS) / 1000);
@@ -393,6 +394,7 @@ async function runEquipmentCheck(interaction, optionalPrompt) {
 module.exports = {
     runEquipmentCheck,
     canRunEquipmentCheck,
+    generateBody,
     REACTION_EMOJI,
     CHECK_DURATION_MS,
 };
