@@ -9,8 +9,8 @@ const {
     finishSpotifyLink,
     parseRedirectInput,
     findPendingStateForGuildUser,
-    getLinkInstructions,
     getConnectInstructions,
+    formatSpotifyLinkMessage,
 } = require('../services/spotifyLink');
 const {
     stopGuild,
@@ -84,7 +84,7 @@ module.exports = {
                 return;
             }
 
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            await interaction.deferReply();
 
             try {
                 const { authorizeUrl } = await beginSpotifyLink(
@@ -94,9 +94,7 @@ module.exports = {
 
                 await interaction.editReply(
                     truncateDiscord(
-                        `${getLinkInstructions(deviceName)}\n\n` +
-                            '**Spotify login link** (open in browser):\n' +
-                            authorizeUrl
+                        formatSpotifyLinkMessage(deviceName, authorizeUrl)
                     )
                 );
             } catch (err) {
