@@ -7,7 +7,7 @@ const client = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-async function generateSpeech(text) {
+async function generateSpeech(text, options = {}) {
     const outputDir = path.join(__dirname, '..', 'data', 'tts');
 
     if (!fs.existsSync(outputDir)) {
@@ -19,8 +19,8 @@ async function generateSpeech(text) {
     const speech = await client.audio.speech.create({
         model: process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts',
         voice: process.env.OPENAI_TTS_VOICE || 'cedar',
-        input: text.slice(0, 4000),
-        instructions: ttsInstructions,
+        input: prepareTextForSpeech(text).slice(0, 4000),
+        instructions: options.instructions ?? ttsInstructions,
         response_format: 'wav',
     });
 
@@ -30,6 +30,23 @@ async function generateSpeech(text) {
     return outputPath;
 }
 
+/**
+ * Strip markdown so TTS reads naturally.
+ * @param {string} text
+ */
+function prepareTextForSpeech(text) {
+    return String(text)
+        .replace(/\*\*/g, '')
+        .replace(/\*/g, '')
+        .replace(/__/g, '')
+        .replace(/_/g, ' ')
+        .replace(/`/g, '')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 module.exports = {
     generateSpeech,
+    prepareTextForSpeech,
 };

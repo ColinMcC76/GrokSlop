@@ -59,6 +59,9 @@ Voice chat (multiple speakers):
 const ttsInstructions =
     'Speak clearly and confidently with a calm, intelligent tone. Use subtle dry wit only when appropriate. Avoid theatrical or repetitive delivery.';
 
+const equipmentCheckTtsInstructions =
+    'Deliver this as a clear, upbeat equipment check call-out in voice chat — like sounding off to a group. Keep it natural and engaging, not robotic or overly dramatic.';
+
 function realtimeSolo() {
     return `${textChat}\n\n${voiceSoloAddon}`;
 }
@@ -99,6 +102,7 @@ module.exports = {
     voiceSoloAddon,
     voiceGroupAddon,
     ttsInstructions,
+    equipmentCheckTtsInstructions,
     realtimeSolo,
     realtimeGroup,
     withCustomPersona,
