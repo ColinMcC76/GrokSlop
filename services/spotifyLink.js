@@ -28,8 +28,6 @@ function formatSpotifyLinkMessage(deviceName, authorizeUrl) {
         '**Spotify login link** — open this on your phone or PC (copy/paste if needed):',
         authorizeUrl,
         '',
-        'If a browser opens on the **bot PC**, you can ignore it. Use the link above instead.',
-        '',
         '1. Open the link → sign in to Spotify → approve access.',
         '2. The page will **not load** afterward (**connection refused** is normal).',
         '3. Copy the **entire URL** from the address bar (`http://127.0.0.1/login?code=...`).',
