@@ -1,5 +1,7 @@
 const { Events, MessageFlags } = require('discord.js');
 
+const { logError } = require('../utils/errorLog');
+
 module.exports = {
     name: Events.InteractionCreate,
     async execute(interaction) {
@@ -11,7 +13,12 @@ module.exports = {
         try {
             await command.execute(interaction);
         } catch (error) {
-            console.error(error);
+            logError('command', error, {
+                command: interaction.commandName,
+                guildId: interaction.guildId,
+                userId: interaction.user?.id,
+                channelId: interaction.channelId,
+            });
 
             const payload = {
                 content: 'There was an error while executing this command.',

@@ -3,6 +3,7 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
+const { initErrorLog } = require('./utils/errorLog');
 
 const client = new Client({
     intents: [
@@ -44,5 +45,7 @@ for (const file of eventFiles) {
         client.on(event.name, (...args) => event.execute(...args));
     }
 }
+
+initErrorLog(client);
 
 client.login(process.env.TOKEN);
