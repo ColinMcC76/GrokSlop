@@ -25,14 +25,17 @@ function formatSpotifyLinkMessage(deviceName, authorizeUrl) {
     return [
         '**Link Spotify to GrokSlop** (Premium required)',
         '',
-        '1. **Click this link** and sign in to Spotify:',
+        '**Spotify login link** — open this on your phone or PC (copy/paste if needed):',
         authorizeUrl,
         '',
-        '2. After login, the page will **not load** — **connection refused** or **can’t reach this page** is normal.',
-        '3. Copy the **entire URL** from your address bar (`http://127.0.0.1/login?code=...`).',
-        '4. Run **`/spotify finish`** in this server and paste that URL into **`redirect`**.',
+        'If a browser opens on the **bot PC**, you can ignore it. Use the link above instead.',
         '',
-        '**Then play in Discord:** run **`/joinvc`**, open Spotify → **Connect to a device** → pick **' +
+        '1. Open the link → sign in to Spotify → approve access.',
+        '2. The page will **not load** afterward (**connection refused** is normal).',
+        '3. Copy the **entire URL** from the address bar (`http://127.0.0.1/login?code=...`).',
+        '4. Run **`/spotify finish`** here and paste that URL into **`redirect`**.',
+        '',
+        '**Then play in Discord:** **`/joinvc`** → Spotify → **Connect to a device** → **' +
             deviceName +
             '**.',
     ].join('\n');

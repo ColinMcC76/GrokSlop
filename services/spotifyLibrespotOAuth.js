@@ -71,6 +71,43 @@ function buildOAuthSpawnArgs(guildId, deviceName) {
 }
 
 /**
+ * @param {string} chunk
+ * @param {string} combined
+ * @returns {string | null}
+ */
+function extractAuthorizeUrl(combined) {
+    const browseMatch = combined.match(/Browse to:\s*(https:\/\/[^\s\r\n]+)/i);
+    if (browseMatch) {
+        return browseMatch[1].trim();
+    }
+
+    const directMatch = combined.match(
+        /(https:\/\/accounts\.spotify\.com\/authorize[^\s\r\n]+)/i
+    );
+    if (directMatch) {
+        return directMatch[1].trim();
+    }
+
+    return null;
+}
+
+/**
+ * @param {import('node:child_process').ChildProcess} proc
+ * @param {(chunk: string) => void} onOutput
+ */
+function wireOAuthOutput(proc, onOutput) {
+    const handle = (chunk) => {
+        onOutput(chunk.toString());
+    };
+    proc.stdout.on('data', handle);
+    proc.stderr.on('data', handle);
+    return () => {
+        proc.stdout.off('data', handle);
+        proc.stderr.off('data', handle);
+    };
+}
+
+/**
  * @param {string} guildId
  * @param {string} userId
  * @param {string} deviceName
@@ -91,6 +128,7 @@ async function startHeadlessOAuth(guildId, userId, deviceName) {
     return new Promise((resolve, reject) => {
         let settled = false;
         let combined = '';
+        let unwire = () => {};
 
         const finish = (err, url) => {
             if (settled) {
@@ -98,7 +136,7 @@ async function startHeadlessOAuth(guildId, userId, deviceName) {
             }
             settled = true;
             clearTimeout(timer);
-            proc.stderr.off('data', onData);
+            unwire();
             if (err) {
                 cancelPendingOAuth(guildId);
                 reject(err);
@@ -110,14 +148,17 @@ async function startHeadlessOAuth(guildId, userId, deviceName) {
         const timer = setTimeout(() => {
             finish(
                 new Error(
-                    'librespot OAuth timed out. Check LIBRESPOT_PATH and try again.'
+                    'Timed out waiting for Spotify login URL. Check LIBRESPOT_PATH and the bot console log.'
                 )
             );
         }, 45_000);
 
-        const onData = (chunk) => {
-            combined += chunk.toString();
-            console.log(`[spotify-oauth:${guildId}]`, chunk.toString().trim());
+        const onOutput = (text) => {
+            combined += text;
+            const line = text.trim();
+            if (line) {
+                console.log(`[spotify-oauth:${guildId}]`, line);
+            }
 
             if (/ENOENT|not found/i.test(combined)) {
                 finish(
@@ -128,13 +169,13 @@ async function startHeadlessOAuth(guildId, userId, deviceName) {
                 return;
             }
 
-            const match = combined.match(/Browse to:\s*(https:\/\/[^\s\r\n]+)/i);
-            if (match) {
-                finish(null, match[1].trim());
+            const url = extractAuthorizeUrl(combined);
+            if (url) {
+                finish(null, url);
             }
         };
 
-        proc.stderr.on('data', onData);
+        unwire = wireOAuthOutput(proc, onOutput);
 
         proc.on('error', (err) => {
             finish(err);
@@ -144,7 +185,7 @@ async function startHeadlessOAuth(guildId, userId, deviceName) {
             if (!settled) {
                 finish(
                     new Error(
-                        `librespot OAuth exited before showing a login URL (code ${code ?? '?'}).`
+                        `librespot OAuth exited before showing a login URL (code ${code ?? '?'}). ${combined.slice(-400)}`
                     )
                 );
             }
@@ -215,6 +256,7 @@ async function completeHeadlessOAuth(guildId, redirectRaw) {
     return new Promise((resolve, reject) => {
         let settled = false;
         let combined = '';
+        let unwire = () => {};
 
         const finish = (err) => {
             if (settled) {
@@ -223,7 +265,7 @@ async function completeHeadlessOAuth(guildId, redirectRaw) {
             settled = true;
             clearTimeout(timer);
             clearInterval(credPoll);
-            proc.stderr.off('data', onData);
+            unwire();
             pendingByGuild.delete(guildId);
 
             if (err) {
@@ -261,7 +303,10 @@ async function completeHeadlessOAuth(guildId, redirectRaw) {
 
         const onData = (chunk) => {
             combined += chunk.toString();
-            console.log(`[spotify-oauth:${guildId}]`, chunk.toString().trim());
+            const line = chunk.toString().trim();
+            if (line) {
+                console.log(`[spotify-oauth:${guildId}]`, line);
+            }
 
             if (
                 /INVALID_CREDENTIALS|Bad credentials|could not initialize|Permission denied/i.test(
@@ -276,7 +321,7 @@ async function completeHeadlessOAuth(guildId, redirectRaw) {
             }
         };
 
-        proc.stderr.on('data', onData);
+        unwire = wireOAuthOutput(proc, onData);
 
         proc.on('close', (code) => {
             if (hasLibrespotCredentials(guildId)) {
