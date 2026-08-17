@@ -130,28 +130,129 @@ async function createYoutubeStream(play, url) {
 }
 
 /**
- * YouTube breaks unofficial parsers often; yt-dlp is the reliable path (install separately).
- * @returns {Promise<{ stream: import('node:stream').Readable, child: import('node:child_process').ChildProcess }>}
+ * @typedef {{ name: string, format: string, extraArgs: string[] }} YtdlpProfile
  */
-function streamYoutubeViaYtdlp(url) {
-    const bin = process.env.YT_DLP_PATH || 'yt-dlp';
-    // Prefer higher-bitrate audio-only; override with YT_DLP_FORMAT if needed.
-    const format =
+
+function defaultYtdlpFormat() {
+    return (
         process.env.YT_DLP_FORMAT ||
-        'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best/ba/b';
-    const args = [
+        'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best/ba/b'
+    );
+}
+
+/**
+ * @returns {YtdlpProfile[]}
+ */
+function getYtdlpProfiles() {
+    const defaultFormat = defaultYtdlpFormat();
+    /** @type {YtdlpProfile[]} */
+    const profiles = [];
+
+    if (process.env.YT_DLP_EXTRACTOR_ARGS?.trim()) {
+        profiles.push({
+            name: 'custom',
+            format: defaultFormat,
+            extraArgs: [
+                '--extractor-args',
+                process.env.YT_DLP_EXTRACTOR_ARGS.trim(),
+            ],
+        });
+    }
+
+    const cookieFile = process.env.YT_DLP_COOKIES?.trim();
+    if (cookieFile) {
+        profiles.push({
+            name: 'cookies-file',
+            format: defaultFormat,
+            extraArgs: [
+                '--cookies',
+                cookieFile,
+                '--extractor-args',
+                'youtube:player_client=default,-android_sdkless',
+                '--js-runtimes',
+                'node',
+            ],
+        });
+    }
+
+    const cookieBrowser = process.env.YT_DLP_COOKIES_FROM_BROWSER?.trim();
+    if (cookieBrowser) {
+        profiles.push({
+            name: `cookies-${cookieBrowser}`,
+            format: defaultFormat,
+            extraArgs: [
+                '--cookies-from-browser',
+                cookieBrowser,
+                '--extractor-args',
+                'youtube:player_client=default,-android_sdkless',
+                '--js-runtimes',
+                'node',
+            ],
+        });
+    }
+
+    profiles.push({
+        name: 'default',
+        format: defaultFormat,
+        extraArgs: [
+            '--extractor-args',
+            'youtube:player_client=default,-android_sdkless',
+            '--js-runtimes',
+            'node',
+        ],
+    });
+
+    profiles.push({
+        name: 'm3u8-ios',
+        format: 'ba[protocol=m3u8_native]/bestaudio[ext=m4a]/bestaudio/best',
+        extraArgs: [
+            '--extractor-args',
+            'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot',
+            '--js-runtimes',
+            'node',
+        ],
+    });
+
+    return profiles;
+}
+
+/**
+ * @param {string} url
+ * @param {YtdlpProfile} profile
+ */
+function buildYtdlpArgs(url, profile) {
+    return [
         '-f',
-        format,
+        profile.format,
         '-S',
         '+abr',
         '-o',
         '-',
         '--no-playlist',
-        '--quiet',
         '--no-progress',
         '--no-warnings',
+        ...profile.extraArgs,
         url,
     ];
+}
+
+function ytdlpStderrError(text) {
+    if (!/ERROR:/i.test(text) && !/HTTP Error 403/i.test(text)) {
+        return null;
+    }
+    return text.match(/ERROR:[^\n\r]+/i)?.[0]?.trim() || 'yt-dlp failed (HTTP 403)';
+}
+
+/**
+ * YouTube breaks unofficial parsers often; yt-dlp is the reliable path (install separately).
+ * Waits for real stdout data or a stderr error before resolving so fallbacks can run.
+ * @param {string} url
+ * @param {YtdlpProfile} profile
+ * @returns {Promise<{ stream: import('node:stream').Readable, child: import('node:child_process').ChildProcess }>}
+ */
+function streamYoutubeViaYtdlp(url, profile) {
+    const bin = process.env.YT_DLP_PATH || 'yt-dlp';
+    const args = buildYtdlpArgs(url, profile);
 
     return new Promise((resolve, reject) => {
         const child = spawn(bin, args, {
@@ -161,73 +262,130 @@ function streamYoutubeViaYtdlp(url) {
 
         const stderrChunks = [];
         let stderrTotal = 0;
-        child.stderr.on('data', (chunk) => {
-            if (stderrTotal < MAX_YTDLP_STDERR_BYTES) {
-                stderrChunks.push(chunk);
-                stderrTotal += chunk.length;
-            }
-        });
-
+        let settled = false;
         const hangMs = 25_000;
         let hangTimer;
-        let streamGiven = false;
 
-        child.on('error', (err) => {
-            if (streamGiven) {
-                console.error('[YouTube queue] yt-dlp error after stream start:', err);
+        const stderrText = () => Buffer.concat(stderrChunks).toString('utf8');
+
+        const finishErr = (err) => {
+            if (settled) {
                 return;
             }
+            settled = true;
             if (hangTimer) {
                 clearTimeout(hangTimer);
-            }
-            if (err.code === 'ENOENT') {
-                err.message =
-                    'yt-dlp is not installed or not on PATH. Install: https://github.com/yt-dlp/yt-dlp#installation — or set YT_DLP_PATH to the executable.';
             }
             try {
                 child.kill('SIGKILL');
             } catch {}
             reject(err);
+        };
+
+        const finishOk = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (hangTimer) {
+                clearTimeout(hangTimer);
+            }
+            resolve({ stream: child.stdout, child });
+        };
+
+        const checkStderrForError = () => {
+            const msg = ytdlpStderrError(stderrText());
+            if (msg) {
+                finishErr(new Error(msg));
+                return true;
+            }
+            return false;
+        };
+
+        child.stderr.on('data', (chunk) => {
+            if (stderrTotal < MAX_YTDLP_STDERR_BYTES) {
+                stderrChunks.push(chunk);
+                stderrTotal += chunk.length;
+            }
+            checkStderrForError();
+        });
+
+        child.on('error', (err) => {
+            if (err.code === 'ENOENT') {
+                err.message =
+                    'yt-dlp is not installed or not on PATH. Install: https://github.com/yt-dlp/yt-dlp#installation — or set YT_DLP_PATH to the executable.';
+            }
+            finishErr(err);
         });
 
         child.on('close', (code, signal) => {
-            const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
+            const errText = stderrText().trim();
             if (code !== 0 && code !== null) {
                 console.error(
                     '[YouTube queue] yt-dlp exited',
                     code,
                     signal || '',
+                    profile.name,
                     errText ? errText.slice(0, 600) : ''
+                );
+            }
+            if (!settled && code !== 0) {
+                finishErr(
+                    new Error(
+                        ytdlpStderrError(errText) ||
+                            `yt-dlp exited ${code ?? '?'} (${profile.name})`
+                    )
                 );
             }
         });
 
-        // Resolve immediately. Do NOT use stdout.once('data') before piping — in flowing mode that
-        // consumes the first chunk, so FFmpeg never sees the container header and playback is silent.
-        streamGiven = true;
-        resolve({ stream: child.stdout, child });
-
         hangTimer = setTimeout(() => {
-            const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
-            try {
-                child.kill('SIGKILL');
-            } catch {}
-            console.error(
-                '[YouTube queue] yt-dlp hang:',
-                `no stdout activity for ${hangMs / 1000}s`,
-                errText ? errText.slice(0, 400) : ''
+            if (checkStderrForError()) {
+                return;
+            }
+            finishErr(
+                new Error(
+                    `yt-dlp timed out after ${hangMs / 1000}s (${profile.name})`
+                )
             );
         }, hangMs);
         if (typeof hangTimer.unref === 'function') {
             hangTimer.unref();
         }
 
-        child.stdout.once('readable', () => {
-            if (hangTimer) {
-                clearTimeout(hangTimer);
+        // Wait for stdout data before piping — do not use stdout.once('data') (consumes header).
+        const onReadable = () => {
+            if (child.stdout.readableLength > 0 && !checkStderrForError()) {
+                child.stdout.off('readable', onReadable);
+                finishOk();
             }
-        });
+        };
+        child.stdout.on('readable', onReadable);
     });
+}
+
+/**
+ * @param {string} url
+ * @returns {Promise<{ stream: import('node:stream').Readable, child?: import('node:child_process').ChildProcess, playDl?: Awaited<ReturnType<typeof createYoutubeStream>> }>}
+ */
+async function streamYoutubeWithFallbacks(url) {
+    for (const profile of getYtdlpProfiles()) {
+        try {
+            const result = await streamYoutubeViaYtdlp(url, profile);
+            console.log(`[YouTube queue] streaming via yt-dlp (${profile.name})`);
+            return result;
+        } catch (err) {
+            console.warn(
+                `[YouTube queue] yt-dlp (${profile.name}) failed:`,
+                err.message || err
+            );
+        }
+    }
+
+    console.warn('[YouTube queue] yt-dlp exhausted, trying play-dl');
+    const play = getPlayDl();
+    const ytStream = await createYoutubeStream(play, url);
+    return { stream: ytStream.stream, playDl: ytStream };
 }
 
 function killYtdlpChild(state) {
@@ -356,35 +514,34 @@ async function playCurrentTrack(state) {
     try {
         let resource;
 
-        try {
-            const { stream, child } = await streamYoutubeViaYtdlp(item.url);
-            state.ytdlpChild = child;
-            child.on('close', () => {
-                if (state.ytdlpChild === child) {
+        const streamed = await streamYoutubeWithFallbacks(item.url);
+        if (streamed.child) {
+            state.ytdlpChild = streamed.child;
+            streamed.child.on('close', () => {
+                if (state.ytdlpChild === streamed.child) {
                     state.ytdlpChild = null;
                 }
             });
-            resource = createAudioResource(stream, {
+            resource = createAudioResource(streamed.stream, {
                 inputType: StreamType.Arbitrary,
                 inlineVolume: true,
                 metadata: { title: item.title, url: item.url },
             });
-            applyVolumeToResource(resource, state.volumePercent);
-            console.log('[YouTube queue] streaming via yt-dlp');
-        } catch (ytdlpErr) {
-            console.warn('[YouTube queue] yt-dlp failed, trying play-dl:', ytdlpErr.message || ytdlpErr);
-            const play = getPlayDl();
-            const ytStream = await createYoutubeStream(play, item.url);
-            resource = createAudioResource(ytStream.stream, {
-                inputType: ytStream.type,
+        } else if (streamed.playDl) {
+            resource = createAudioResource(streamed.stream, {
+                inputType: streamed.playDl.type,
                 inlineVolume: true,
                 metadata: { title: item.title, url: item.url },
             });
-            applyVolumeToResource(resource, state.volumePercent);
             try {
-                play.attachListeners(state.player, ytStream);
+                getPlayDl().attachListeners(state.player, streamed.playDl);
             } catch {}
+            console.log('[YouTube queue] streaming via play-dl');
+        } else {
+            throw new Error('No YouTube stream source available.');
         }
+
+        applyVolumeToResource(resource, state.volumePercent);
 
         state.player.play(resource);
 
@@ -421,7 +578,8 @@ async function playCurrentTrack(state) {
         if (state.textChannel) {
             try {
                 await state.textChannel.send(
-                    `Could not play **${item.title}**: ${err.message || err}`
+                    `Could not play **${item.title}**: ${err.message || err}\n` +
+                        'If this is a YouTube 403 error, update yt-dlp (`yt-dlp -U`) and restart the bot. See `docs/youtube-playback.md`.'
                 );
             } catch {}
         }
