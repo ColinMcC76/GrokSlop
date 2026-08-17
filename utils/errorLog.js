@@ -2,7 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const util = require('node:util');
 
-const LOG_DIR = path.join(__dirname, '..', 'data', 'logs');
+const PROJECT_ROOT = path.join(__dirname, '..');
+const LOG_DIR = process.env.ERROR_LOG_DIR?.trim()
+    ? path.resolve(process.env.ERROR_LOG_DIR.trim())
+    : path.join(PROJECT_ROOT, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'error.log');
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
 const MAX_ROTATED_FILES = 3;
@@ -137,6 +140,7 @@ function logWarn(source, warning, meta) {
               : serializeArgs([warning]);
     const detail = meta ? serializeArgs([meta]) : undefined;
     appendLine('warn', source, message, detail);
+    originalConsoleWarn?.(`[${source}]`, warning, meta ?? '');
 }
 
 /**
@@ -172,12 +176,10 @@ function initErrorLog(client) {
 
     process.on('uncaughtException', (err) => {
         logError('uncaughtException', err);
-        originalConsoleError('[errorLog] uncaughtException:', err);
     });
 
     process.on('unhandledRejection', (reason) => {
         logError('unhandledRejection', reason);
-        originalConsoleError('[errorLog] unhandledRejection:', reason);
     });
 
     if (client) {
@@ -193,71 +195,8 @@ function initErrorLog(client) {
     originalConsoleError('[errorLog] writing to', LOG_FILE);
 }
 
-/**
- * @param {{ maxLines?: number, maxChars?: number }} [opts]
- */
-function readRecentLog(opts = {}) {
-    const maxLines = Math.min(Math.max(opts.maxLines ?? 40, 1), 200);
-    const maxChars = Math.min(Math.max(opts.maxChars ?? 1800, 200), 3900);
-
-    if (!fs.existsSync(LOG_FILE)) {
-        return '(no errors logged yet)';
-    }
-
-    const content = fs.readFileSync(LOG_FILE, 'utf8');
-    const lines = content.trim().split('\n');
-    const tail = lines.slice(-maxLines).join('\n');
-
-    if (tail.length <= maxChars) {
-        return tail || '(log file is empty)';
-    }
-
-    return `…${tail.slice(tail.length - maxChars + 1)}`;
-}
-
-function getLogFilePath() {
-    ensureLogDir();
-    return LOG_FILE;
-}
-
-function logFileExists() {
-    return fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > 0;
-}
-
-function clearLogs() {
-    ensureLogDir();
-    for (const file of fs.readdirSync(LOG_DIR)) {
-        if (file.startsWith('error.log')) {
-            fs.unlinkSync(path.join(LOG_DIR, file));
-        }
-    }
-    appendLine('info', 'errorlog', 'Log cleared via /errorlog clear');
-}
-
-/**
- * @param {import('discord.js').GuildMember | null} member
- * @param {string} userId
- */
-function canViewErrorLog(member, userId) {
-    const allowList = process.env.ERRORLOG_USER_IDS?.split(',')
-        .map((id) => id.trim())
-        .filter(Boolean);
-    if (allowList?.includes(userId)) {
-        return true;
-    }
-    if (member?.permissions?.has('ManageGuild')) {
-        return true;
-    }
-    return false;
-}
-
 module.exports = {
     initErrorLog,
     logError,
     logWarn,
-    readRecentLog,
-    getLogFilePath,
-    logFileExists,
-    clearLogs,
-    canViewErrorLog,
 };
