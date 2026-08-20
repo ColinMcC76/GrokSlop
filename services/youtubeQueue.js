@@ -1,12 +1,18 @@
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
     createAudioResource,
     AudioPlayerStatus,
     StreamType,
 } = require('@discordjs/voice');
+const ffmpegStatic = require('ffmpeg-static');
 
 /** @type {Map<string, GuildQueueState>} */
 const queues = new Map();
+
+/** @type {string | null} */
+let cachedYtdlpVersion = null;
 
 function getPlayDl() {
     try {
@@ -49,6 +55,102 @@ function isPlayDlInstalled() {
 const MAX_PLAYLIST_TRACKS = 25;
 const IDLE_WAIT_MS = 3_600_000;
 const MAX_YTDLP_STDERR_BYTES = 128 * 1024;
+const YT_CACHE_DIR = path.join(__dirname, '..', 'data', 'yt-cache');
+
+function ytdlpBin() {
+    return process.env.YT_DLP_PATH || 'yt-dlp';
+}
+
+function ytdlpBaseExtraArgs() {
+    const args = [];
+    const runtime = process.env.YT_DLP_JS_RUNTIME?.trim() || 'node';
+    args.push('--js-runtimes', runtime);
+    if (process.env.YT_DLP_REMOTE_COMPONENTS !== '0') {
+        args.push('--remote-components', 'ejs:github');
+    }
+    const impersonate = process.env.YT_DLP_IMPERSONATE?.trim();
+    if (impersonate) {
+        args.push('--impersonate', impersonate);
+    }
+    return args;
+}
+
+/**
+ * @param {string} extractorArgs
+ */
+function ytdlpProfileExtra(extractorArgs) {
+    return ['--extractor-args', extractorArgs, ...ytdlpBaseExtraArgs()];
+}
+
+/**
+ * @param {string[]} args
+ * @param {number} timeoutMs
+ */
+function runYtdlpCollect(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const child = execFile(
+            ytdlpBin(),
+            args,
+            {
+                windowsHide: true,
+                maxBuffer: 512 * 1024,
+                timeout: timeoutMs,
+            },
+            (err, stdout, stderr) => {
+                if (err) {
+                    const msg =
+                        ytdlpStderrError(String(stderr || '')) ||
+                        err.message ||
+                        String(err);
+                    reject(new Error(msg));
+                    return;
+                }
+                resolve({
+                    stdout: String(stdout || ''),
+                    stderr: String(stderr || ''),
+                });
+            }
+        );
+        child.on('error', (spawnErr) => {
+            if (spawnErr.code === 'ENOENT') {
+                reject(
+                    new Error(
+                        'yt-dlp is not installed or not on PATH. Install from https://github.com/yt-dlp/yt-dlp — or set YT_DLP_PATH in .env.'
+                    )
+                );
+                return;
+            }
+            reject(spawnErr);
+        });
+    });
+}
+
+async function logYtdlpVersionOnce() {
+    if (cachedYtdlpVersion !== null) {
+        return cachedYtdlpVersion;
+    }
+    try {
+        const { stdout } = await runYtdlpCollect(['--version'], 10_000);
+        cachedYtdlpVersion = stdout.trim();
+        console.log(`[YouTube queue] yt-dlp ${cachedYtdlpVersion}`);
+    } catch (e) {
+        cachedYtdlpVersion = '';
+        console.warn(
+            '[YouTube queue] yt-dlp not available:',
+            e?.message || e
+        );
+    }
+    return cachedYtdlpVersion;
+}
+
+function deleteTempFile(filePath) {
+    if (!filePath) {
+        return;
+    }
+    try {
+        fs.unlinkSync(filePath);
+    } catch {}
+}
 
 /**
  * @param {import('@discordjs/voice').AudioResource<unknown>} resource
@@ -152,10 +254,7 @@ function getYtdlpProfiles() {
         profiles.push({
             name: 'custom',
             format: defaultFormat,
-            extraArgs: [
-                '--extractor-args',
-                process.env.YT_DLP_EXTRACTOR_ARGS.trim(),
-            ],
+            extraArgs: ytdlpProfileExtra(process.env.YT_DLP_EXTRACTOR_ARGS.trim()),
         });
     }
 
@@ -164,54 +263,62 @@ function getYtdlpProfiles() {
         profiles.push({
             name: 'cookies-file',
             format: defaultFormat,
-            extraArgs: [
-                '--cookies',
-                cookieFile,
-                '--extractor-args',
-                'youtube:player_client=default,-android_sdkless',
-                '--js-runtimes',
-                'node',
-            ],
-        });
-    }
-
-    const cookieBrowser = process.env.YT_DLP_COOKIES_FROM_BROWSER?.trim();
-    if (cookieBrowser) {
-        profiles.push({
-            name: `cookies-${cookieBrowser}`,
-            format: defaultFormat,
-            extraArgs: [
-                '--cookies-from-browser',
-                cookieBrowser,
-                '--extractor-args',
-                'youtube:player_client=default,-android_sdkless',
-                '--js-runtimes',
-                'node',
-            ],
+            extraArgs: ytdlpProfileExtra(
+                'youtube:player_client=default,-android_sdkless'
+            ).concat(['--cookies', cookieFile]),
         });
     }
 
     profiles.push({
+        name: 'web-actual-js',
+        format: defaultFormat,
+        extraArgs: ytdlpProfileExtra(
+            'youtube:player_client=web,default,-android_sdkless;player_js_version=actual'
+        ),
+    });
+
+    profiles.push({
         name: 'default',
         format: defaultFormat,
-        extraArgs: [
-            '--extractor-args',
-            'youtube:player_client=default,-android_sdkless',
-            '--js-runtimes',
-            'node',
-        ],
+        extraArgs: ytdlpProfileExtra(
+            'youtube:player_client=default,-android_sdkless'
+        ),
+    });
+
+    profiles.push({
+        name: 'android-vr',
+        format: defaultFormat,
+        extraArgs: ytdlpProfileExtra(
+            'youtube:player_client=android_vr,default,-android_sdkless'
+        ),
+    });
+
+    profiles.push({
+        name: 'tv-embedded',
+        format: defaultFormat,
+        extraArgs: ytdlpProfileExtra(
+            'youtube:player_client=tv_embedded,default,-android_sdkless'
+        ),
     });
 
     profiles.push({
         name: 'm3u8-ios',
         format: 'ba[protocol=m3u8_native]/bestaudio[ext=m4a]/bestaudio/best',
-        extraArgs: [
-            '--extractor-args',
-            'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot',
-            '--js-runtimes',
-            'node',
-        ],
+        extraArgs: ytdlpProfileExtra(
+            'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot'
+        ),
     });
+
+    const cookieBrowser = process.env.YT_DLP_COOKIES_FROM_BROWSER?.trim();
+    if (cookieBrowser && process.env.YT_DLP_SKIP_BROWSER_COOKIES !== '1') {
+        profiles.push({
+            name: `cookies-${cookieBrowser}`,
+            format: defaultFormat,
+            extraArgs: ytdlpProfileExtra(
+                'youtube:player_client=default,-android_sdkless'
+            ).concat(['--cookies-from-browser', cookieBrowser]),
+        });
+    }
 
     return profiles;
 }
@@ -251,7 +358,7 @@ function ytdlpStderrError(text) {
  * @returns {Promise<{ stream: import('node:stream').Readable, child: import('node:child_process').ChildProcess }>}
  */
 function streamYoutubeViaYtdlp(url, profile) {
-    const bin = process.env.YT_DLP_PATH || 'yt-dlp';
+    const bin = ytdlpBin();
     const args = buildYtdlpArgs(url, profile);
 
     return new Promise((resolve, reject) => {
@@ -366,26 +473,226 @@ function streamYoutubeViaYtdlp(url, profile) {
 
 /**
  * @param {string} url
- * @returns {Promise<{ stream: import('node:stream').Readable, child?: import('node:child_process').ChildProcess, playDl?: Awaited<ReturnType<typeof createYoutubeStream>> }>}
+ * @param {YtdlpProfile} profile
+ */
+async function getYtdlpDirectUrl(url, profile) {
+    const args = [
+        '-g',
+        '-f',
+        profile.format,
+        '--no-playlist',
+        '--no-warnings',
+        ...profile.extraArgs,
+        url,
+    ];
+    const { stdout, stderr } = await runYtdlpCollect(args, 45_000);
+    if (ytdlpStderrError(stderr)) {
+        throw new Error(ytdlpStderrError(stderr));
+    }
+    const directUrl = stdout
+        .trim()
+        .split(/\r?\n/)
+        .find((line) => /^https?:\/\//i.test(line));
+    if (!directUrl) {
+        throw new Error('yt-dlp -g returned no stream URL');
+    }
+    return directUrl;
+}
+
+/**
+ * @param {string} directUrl
+ */
+function streamUrlViaFfmpeg(directUrl) {
+    if (!ffmpegStatic) {
+        return Promise.reject(new Error('ffmpeg-static is not available'));
+    }
+
+    return new Promise((resolve, reject) => {
+        const child = spawn(
+            ffmpegStatic,
+            [
+                '-reconnect',
+                '1',
+                '-reconnect_streamed',
+                '1',
+                '-reconnect_delay_max',
+                '5',
+                '-i',
+                directUrl,
+                '-vn',
+                '-loglevel',
+                'error',
+                '-f',
+                's16le',
+                '-ar',
+                '48000',
+                '-ac',
+                '2',
+                'pipe:1',
+            ],
+            {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+            }
+        );
+
+        let settled = false;
+        const stderrChunks = [];
+        const hangMs = 25_000;
+        let hangTimer;
+
+        const finishErr = (err) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (hangTimer) {
+                clearTimeout(hangTimer);
+            }
+            try {
+                child.kill('SIGKILL');
+            } catch {}
+            reject(err);
+        };
+
+        const finishOk = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (hangTimer) {
+                clearTimeout(hangTimer);
+            }
+            resolve({ stream: child.stdout, child });
+        };
+
+        child.stderr.on('data', (chunk) => {
+            stderrChunks.push(chunk);
+        });
+
+        child.on('error', finishErr);
+        child.on('close', (code) => {
+            if (!settled && code !== 0) {
+                const errText = Buffer.concat(stderrChunks).toString('utf8').trim();
+                finishErr(new Error(errText || `ffmpeg exited ${code ?? '?'}`));
+            }
+        });
+
+        hangTimer = setTimeout(() => {
+            finishErr(new Error(`ffmpeg timed out after ${hangMs / 1000}s`));
+        }, hangMs);
+        hangTimer.unref?.();
+
+        const onReadable = () => {
+            if (child.stdout.readableLength > 0) {
+                child.stdout.off('readable', onReadable);
+                finishOk();
+            }
+        };
+        child.stdout.on('readable', onReadable);
+    });
+}
+
+/**
+ * @param {string} url
+ * @param {YtdlpProfile} profile
+ */
+async function downloadYoutubeViaYtdlp(url, profile) {
+    fs.mkdirSync(YT_CACHE_DIR, { recursive: true });
+    const stem = `track-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const outTemplate = path.join(YT_CACHE_DIR, `${stem}.%(ext)s`);
+    const args = [
+        '-f',
+        profile.format,
+        '-S',
+        '+abr',
+        '-o',
+        outTemplate,
+        '--no-playlist',
+        '--no-progress',
+        '--no-warnings',
+        ...profile.extraArgs,
+        url,
+    ];
+
+    await runYtdlpCollect(args, 120_000);
+
+    const fileName = fs
+        .readdirSync(YT_CACHE_DIR)
+        .find((name) => name.startsWith(`${stem}.`));
+    if (!fileName) {
+        throw new Error('yt-dlp download produced no file');
+    }
+    return path.join(YT_CACHE_DIR, fileName);
+}
+
+/**
+ * @param {string} url
  */
 async function streamYoutubeWithFallbacks(url) {
-    for (const profile of getYtdlpProfiles()) {
+    await logYtdlpVersionOnce();
+
+    const profiles = getYtdlpProfiles();
+    const errors = [];
+
+    for (const profile of profiles) {
         try {
             const result = await streamYoutubeViaYtdlp(url, profile);
-            console.log(`[YouTube queue] streaming via yt-dlp (${profile.name})`);
-            return result;
+            console.log(
+                `[YouTube queue] streaming via yt-dlp pipe (${profile.name})`
+            );
+            return { ...result, mode: 'ytdlp-pipe' };
         } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`${profile.name}: ${msg}`);
             console.warn(
-                `[YouTube queue] yt-dlp (${profile.name}) failed:`,
-                err.message || err
+                `[YouTube queue] yt-dlp pipe (${profile.name}) failed:`,
+                msg
             );
         }
     }
 
-    console.warn('[YouTube queue] yt-dlp exhausted, trying play-dl');
-    const play = getPlayDl();
-    const ytStream = await createYoutubeStream(play, url);
-    return { stream: ytStream.stream, playDl: ytStream };
+    for (const profile of profiles) {
+        try {
+            const directUrl = await getYtdlpDirectUrl(url, profile);
+            const result = await streamUrlViaFfmpeg(directUrl);
+            console.log(
+                `[YouTube queue] streaming via yt-dlp URL + ffmpeg (${profile.name})`
+            );
+            return { ...result, mode: 'ffmpeg-url' };
+        } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`url+ffmpeg ${profile.name}: ${msg}`);
+            console.warn(
+                `[YouTube queue] yt-dlp URL + ffmpeg (${profile.name}) failed:`,
+                msg
+            );
+        }
+    }
+
+    for (const profile of profiles) {
+        try {
+            const filePath = await downloadYoutubeViaYtdlp(url, profile);
+            console.log(
+                `[YouTube queue] playing downloaded file (${profile.name})`
+            );
+            return { filePath, mode: 'ytdlp-file' };
+        } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`download ${profile.name}: ${msg}`);
+            console.warn(
+                `[YouTube queue] yt-dlp download (${profile.name}) failed:`,
+                msg
+            );
+        }
+    }
+
+    const tail = errors.slice(-3).join(' | ');
+    throw new Error(
+        'YouTube playback failed. Update yt-dlp (`yt-dlp -U` or nightly), install Deno, ' +
+            'export cookies.txt to YT_DLP_COOKIES (remove YT_DLP_COOKIES_FROM_BROWSER if you see DPAPI errors). ' +
+            `See docs/youtube-playback.md. Last errors: ${tail}`
+    );
 }
 
 function killYtdlpChild(state) {
@@ -510,33 +817,33 @@ async function playCurrentTrack(state) {
 
     const gen = state.generation;
     killYtdlpChild(state);
+    let tempFile = null;
 
     try {
         let resource;
 
         const streamed = await streamYoutubeWithFallbacks(item.url);
-        if (streamed.child) {
-            state.ytdlpChild = streamed.child;
-            streamed.child.on('close', () => {
-                if (state.ytdlpChild === streamed.child) {
-                    state.ytdlpChild = null;
-                }
+
+        if (streamed.mode === 'ytdlp-file' && streamed.filePath) {
+            tempFile = streamed.filePath;
+            resource = createAudioResource(tempFile, {
+                inlineVolume: true,
+                metadata: { title: item.title, url: item.url },
             });
+        } else if (streamed.stream) {
+            if (streamed.child) {
+                state.ytdlpChild = streamed.child;
+                streamed.child.on('close', () => {
+                    if (state.ytdlpChild === streamed.child) {
+                        state.ytdlpChild = null;
+                    }
+                });
+            }
             resource = createAudioResource(streamed.stream, {
                 inputType: StreamType.Arbitrary,
                 inlineVolume: true,
                 metadata: { title: item.title, url: item.url },
             });
-        } else if (streamed.playDl) {
-            resource = createAudioResource(streamed.stream, {
-                inputType: streamed.playDl.type,
-                inlineVolume: true,
-                metadata: { title: item.title, url: item.url },
-            });
-            try {
-                getPlayDl().attachListeners(state.player, streamed.playDl);
-            } catch {}
-            console.log('[YouTube queue] streaming via play-dl');
         } else {
             throw new Error('No YouTube stream source available.');
         }
@@ -563,17 +870,21 @@ async function playCurrentTrack(state) {
         await waitUntilIdle(state.player, gen, state);
 
         if (state.generation !== gen) {
+            deleteTempFile(tempFile);
             return;
         }
 
         killYtdlpChild(state);
+        deleteTempFile(tempFile);
         state.items.shift();
         await playNextFromQueue(state);
     } catch (err) {
         if (state.generation !== gen) {
+            deleteTempFile(tempFile);
             return;
         }
         killYtdlpChild(state);
+        deleteTempFile(tempFile);
         console.error('[YouTube queue] Playback failed:', err);
         if (state.textChannel) {
             try {
