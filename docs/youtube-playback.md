@@ -1,12 +1,19 @@
 # YouTube playback (`/play`)
 
-GrokSlop plays YouTube audio with **yt-dlp** first, then **play-dl** as a fallback.
+GrokSlop plays YouTube with **yt-dlp** (pipe stream, direct URL + ffmpeg, or temp download). **play-dl** is only used for search/URL lookup — not streaming (YouTube breaks it often).
 
-## HTTP 403 Forbidden
+## Your log pattern (403 everywhere)
 
-YouTube often blocks outdated yt-dlp builds. If every video fails with `HTTP Error 403`:
+If `error.log` shows:
 
-### 1. Update yt-dlp (most important)
+- `yt-dlp (default) failed: HTTP Error 403`
+- `yt-dlp (m3u8-ios) failed: HTTP Error 403`
+- `Failed to decrypt with DPAPI` (browser cookies)
+- `play-dl ... Invalid URL`
+
+Do the steps below in order.
+
+## 1. Update yt-dlp (required)
 
 In PowerShell:
 
@@ -14,34 +21,78 @@ In PowerShell:
 yt-dlp -U
 ```
 
-Or download the latest release from [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases).
+If that does not help:
 
-GrokSlop already passes YouTube workarounds (`player_client=default,-android_sdkless` and `--js-runtimes node`). You still need a **recent yt-dlp** binary.
-
-### 2. Optional: browser cookies (if 403 persists)
-
-Add to `.env` (Chrome example — Edge/Firefox also work):
-
-```env
-YT_DLP_COOKIES_FROM_BROWSER=chrome
+```powershell
+yt-dlp --update-to nightly
 ```
 
-Or export a cookies file and set:
+Confirm version:
 
-```env
-YT_DLP_COOKIES=C:\Users\colin\Personal Use\Powershell\grokbot\cookies.txt
+```powershell
+yt-dlp --version
 ```
 
-### 3. Optional: custom yt-dlp path
+You want a **2026** build (e.g. `2026.01.29` or newer nightly).
+
+Set in `.env` if yt-dlp is not on PATH:
 
 ```env
 YT_DLP_PATH=C:\path\to\yt-dlp.exe
 ```
 
-### 4. Restart GrokSlop
+## 2. Install Deno (JS challenge solver)
 
-After updating yt-dlp or changing `.env`, restart the bot.
+YouTube now needs a JS runtime for yt-dlp:
+
+```powershell
+irm https://deno.land/install.ps1 | iex
+```
+
+Add Deno to PATH, then in `.env`:
+
+```env
+YT_DLP_JS_RUNTIME=deno
+```
+
+(Node alone may not be enough — Deno is recommended.)
+
+## 3. Fix cookies (remove broken browser option)
+
+**Do not use** `YT_DLP_COOKIES_FROM_BROWSER=chrome` if you see **DPAPI** errors — that happens when the bot runs as a different user/session than your browser.
+
+Instead:
+
+1. Install a “Get cookies.txt” browser extension for YouTube
+2. Export cookies while logged into YouTube
+3. Save as `cookies.txt` in your grokbot folder
+4. In `.env`:
+
+```env
+YT_DLP_COOKIES=C:\Users\colin\Personal Use\Powershell\grokbot\cookies.txt
+YT_DLP_SKIP_BROWSER_COOKIES=1
+```
+
+Remove or comment out `YT_DLP_COOKIES_FROM_BROWSER`.
+
+## 4. Optional extras
+
+```env
+YT_DLP_IMPERSONATE=chrome
+```
+
+(Only if your yt-dlp build supports `--impersonate`.)
+
+## 5. Restart GrokSlop
+
+```powershell
+cd "C:\Users\colin\Personal Use\Powershell\grokbot"
+git pull
+node index.js
+```
+
+On first `/play`, the console logs `[YouTube queue] yt-dlp <version>`.
 
 ## Logs
 
-Check `logs\error.log` in the grokbot folder for `[YouTube queue]` lines.
+Check `logs\error.log` for `[YouTube queue]` lines.
