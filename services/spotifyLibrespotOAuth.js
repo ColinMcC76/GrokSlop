@@ -1,6 +1,7 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
 const LIBRESPOT_BIN = process.env.LIBRESPOT_PATH || 'librespot';
 
@@ -45,6 +46,95 @@ function clearLibrespotCache(guildId) {
 }
 
 /**
+ * Remove cached login so librespot prints a fresh OAuth URL.
+ * @param {string} guildId
+ */
+function clearLibrespotCredentials(guildId) {
+    try {
+        fs.rmSync(credentialsPath(guildId), { force: true });
+    } catch {}
+}
+
+/**
+ * librespot prints "Browse to: …" with println! to stdout. When stdout is a pipe,
+ * Rust block-buffers it and the URL may not flush before librespot waits on stdin.
+ * Wrap the spawn with a PTY or line-buffer helper when available.
+ * @param {string[]} args
+ * @param {import('node:child_process').SpawnOptions} spawnOptions
+ */
+function spawnLibrespotOAuth(args, spawnOptions) {
+    /** @type {{ command: string, args: string[], label: string }[]} */
+    const wrappers = [];
+
+    if (process.platform !== 'win32') {
+        wrappers.push({
+            command: 'script',
+            args: ['-q', '/dev/null', LIBRESPOT_BIN, ...args],
+            label: 'script',
+        });
+        wrappers.push({
+            command: 'stdbuf',
+            args: ['-oL', '-eL', LIBRESPOT_BIN, ...args],
+            label: 'stdbuf',
+        });
+    } else {
+        for (const root of [
+            process.env.ProgramFiles,
+            process.env['ProgramFiles(x86)'],
+            process.env.LOCALAPPDATA &&
+                path.join(process.env.LOCALAPPDATA, 'Programs', 'Git'),
+        ].filter(Boolean)) {
+            const usrBin = path.join(root, 'Git', 'usr', 'bin');
+            const stdbufExe = path.join(usrBin, 'stdbuf.exe');
+            if (fs.existsSync(stdbufExe)) {
+                wrappers.push({
+                    command: stdbufExe,
+                    args: ['-oL', '-eL', LIBRESPOT_BIN, ...args],
+                    label: 'git-stdbuf',
+                });
+            }
+            const winptyExe = path.join(usrBin, 'winpty.exe');
+            if (fs.existsSync(winptyExe)) {
+                wrappers.push({
+                    command: winptyExe,
+                    args: [LIBRESPOT_BIN, ...args],
+                    label: 'winpty',
+                });
+            }
+        }
+    }
+
+    wrappers.push({
+        command: LIBRESPOT_BIN,
+        args,
+        label: 'direct',
+    });
+
+    for (const wrapper of wrappers) {
+        try {
+            const proc = spawn(wrapper.command, wrapper.args, spawnOptions);
+            if (wrapper.label !== 'direct') {
+                console.log(
+                    `[spotify-oauth] using ${wrapper.label} wrapper for librespot OAuth stdout`
+                );
+            } else {
+                console.warn(
+                    '[spotify-oauth] spawning librespot without a PTY/line-buffer wrapper; ' +
+                        'OAuth URL capture may fail on some platforms (install Git for Windows stdbuf on Windows).'
+                );
+            }
+            return proc;
+        } catch (err) {
+            if (wrapper.label === 'direct') {
+                throw err;
+            }
+        }
+    }
+
+    throw new Error(`Could not spawn librespot OAuth process at "${LIBRESPOT_BIN}".`);
+}
+
+/**
  * @param {string} guildId
  * @param {string} deviceName
  */
@@ -66,7 +156,6 @@ function buildOAuthSpawnArgs(guildId, deviceName) {
         '--enable-oauth',
         '--oauth-port',
         '0',
-        '--quiet',
     ];
 }
 
@@ -76,7 +165,9 @@ function buildOAuthSpawnArgs(guildId, deviceName) {
  * @returns {string | null}
  */
 function extractAuthorizeUrl(combined) {
-    const browseMatch = combined.match(/Browse to:\s*(https:\/\/[^\s\r\n]+)/i);
+    const browseMatch = combined.match(
+        /Browse to:\s*(https:\/\/accounts\.spotify\.com\/authorize[^\s\r\n]+)/i
+    );
     if (browseMatch) {
         return browseMatch[1].trim();
     }
@@ -118,9 +209,16 @@ async function startHeadlessOAuth(guildId, userId, deviceName) {
         cancelPendingOAuth(guildId);
     }
 
-    const proc = spawn(LIBRESPOT_BIN, buildOAuthSpawnArgs(guildId, deviceName), {
+    const proc = spawnLibrespotOAuth(buildOAuthSpawnArgs(guildId, deviceName), {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        env: {
+            ...process.env,
+            // Avoid extra prompts; URL must appear on stdout/stderr for Discord.
+            NO_COLOR: '1',
+            TERM: process.env.TERM || 'dumb',
+        },
+        cwd: os.tmpdir(),
     });
 
     pendingByGuild.set(guildId, { proc, guildId, userId });
@@ -354,6 +452,7 @@ module.exports = {
     systemCacheDir,
     hasLibrespotCredentials,
     clearLibrespotCache,
+    clearLibrespotCredentials,
     startHeadlessOAuth,
     completeHeadlessOAuth,
     cancelPendingOAuth,

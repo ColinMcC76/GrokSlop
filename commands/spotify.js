@@ -10,7 +10,7 @@ const {
     parseRedirectInput,
     findPendingStateForGuildUser,
     getConnectInstructions,
-    formatSpotifyLinkMessage,
+    deliverSpotifyLinkReply,
 } = require('../services/spotifyLink');
 const {
     stopGuild,
@@ -96,20 +96,13 @@ module.exports = {
                     interaction.user.id
                 );
 
-                const content = truncateDiscord(
-                    formatSpotifyLinkMessage(deviceName, authorizeUrl)
+                await deliverSpotifyLinkReply(
+                    interaction,
+                    deviceName,
+                    authorizeUrl
                 );
-
-                try {
-                    await interaction.editReply(content);
-                } catch {
-                    await interaction.editReply(
-                        '**Link Spotify to GrokSlop** — open this URL on your phone or PC:\n' +
-                            authorizeUrl +
-                            '\n\nThen follow **`/spotify finish`** steps from `/spotify status`.'
-                    );
-                }
             } catch (err) {
+                console.error('[spotify] /spotify link failed:', err);
                 await interaction.editReply({
                     content: err.message || String(err),
                 });

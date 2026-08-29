@@ -7,6 +7,7 @@ const {
     startHeadlessOAuth,
     completeHeadlessOAuth,
     isLibrespotOAuthPending,
+    clearLibrespotCredentials,
 } = require('./spotifyLibrespotOAuth');
 
 /** @type {Map<string, { guildId: string, userId: string, createdAt: number }>} */
@@ -37,6 +38,39 @@ function formatSpotifyLinkMessage(deviceName, authorizeUrl) {
             deviceName +
             '**.',
     ].join('\n');
+}
+
+/**
+ * Post the Spotify login instructions to a deferred slash command reply.
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction
+ * @param {string} deviceName
+ * @param {string} authorizeUrl
+ */
+async function deliverSpotifyLinkReply(interaction, deviceName, authorizeUrl) {
+    const content = formatSpotifyLinkMessage(deviceName, authorizeUrl);
+    if (content.length <= 2000) {
+        await interaction.editReply(content);
+        return;
+    }
+
+    const intro = [
+        '**Link Spotify to GrokSlop** (Premium required)',
+        '',
+        '**Spotify login link** — open this on your phone or PC (copy/paste if needed):',
+        '(see next message)',
+        '',
+        '1. Open the link → sign in to Spotify → approve access.',
+        '2. The page will **not load** afterward (**connection refused** is normal).',
+        '3. Copy the **entire URL** from the address bar (`http://127.0.0.1/login?code=...`).',
+        '4. Run **`/spotify finish`** here and paste that URL into **`redirect`**.',
+        '',
+        '**Then play in Discord:** **`/joinvc`** → Spotify → **Connect to a device** → **' +
+            deviceName +
+            '**.',
+    ].join('\n');
+
+    await interaction.editReply(intro);
+    await interaction.followUp({ content: authorizeUrl });
 }
 
 /**
@@ -240,6 +274,9 @@ async function completeLibrespotLink(client, guildId, userId) {
  * @param {string} userId
  */
 async function beginSpotifyLink(guildId, userId) {
+    const { stopGuild } = require('./spotifyConnect');
+    await stopGuild(guildId, false);
+    clearLibrespotCredentials(guildId);
     createOAuthState(guildId, userId);
     const authorizeUrl = await startHeadlessOAuth(
         guildId,
@@ -301,4 +338,5 @@ module.exports = {
     getLinkInstructions,
     getConnectInstructions,
     formatSpotifyLinkMessage,
+    deliverSpotifyLinkReply,
 };
