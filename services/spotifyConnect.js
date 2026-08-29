@@ -30,6 +30,7 @@ const PCM_CHANNELS = 2;
  *   playerErrorHandler: ((err: unknown) => void) | null,
  *   playerStateHandler: ((old: unknown, nw: unknown) => void) | null,
  *   librespotPipeUnpipe: (() => void) | null,
+ *   sinkPipeUnpipe: (() => void) | null,
  *   ffmpegPipeUnpipe: (() => void) | null,
  *   restartingFfmpeg: boolean,
  *   lastLog: string,
@@ -70,7 +71,13 @@ function guardStreamErrors(stream, label) {
  * @param {import('node:stream').Readable} src
  * @param {import('node:stream').Writable} dest
  */
-function safePipe(src, dest) {
+/**
+ * @param {import('node:stream').Readable} src
+ * @param {import('node:stream').Writable} dest
+ * @param {{ keepSrcConnected?: boolean }} [options]
+ */
+function safePipe(src, dest, options = {}) {
+    const keepSrcConnected = options.keepSrcConnected === true;
     guardStreamErrors(src, 'pipe src');
     guardStreamErrors(dest, 'pipe dest');
     src.pipe(dest);
@@ -84,6 +91,12 @@ function safePipe(src, dest) {
     };
     const onDestError = (err) => {
         if (isBenignStreamError(err)) {
+            if (keepSrcConnected) {
+                try {
+                    dest.destroy();
+                } catch {}
+                return;
+            }
             try {
                 src.unpipe(dest);
             } catch {}
@@ -102,12 +115,73 @@ function safePipe(src, dest) {
 }
 
 function createDiscardSink() {
+    return createPacedDiscardSink('discard');
+}
+
+/**
+ * Consume librespot PCM at real-time speed so tracks don't finish instantly.
+ * @param {string} label
+ */
+function createPacedDiscardSink(label) {
+    const bytesPerSecond = PCM_RATE * PCM_CHANNELS * 2;
+    /** @type {Buffer[]} */
+    const queue = [];
+    let queuedBytes = 0;
+    /** @type {(() => void) | null} */
+    let pendingWriteCb = null;
+    const maxQueuedBytes = bytesPerSecond * 3;
+    const tickMs = 20;
+    const bytesPerTick = Math.max(1, Math.floor((bytesPerSecond * tickMs) / 1000));
+
+    const timer = setInterval(() => {
+        let budget = bytesPerTick;
+        while (budget > 0 && queue.length > 0) {
+            const head = queue[0];
+            if (head.length <= budget) {
+                budget -= head.length;
+                queuedBytes -= head.length;
+                queue.shift();
+            } else {
+                queue[0] = head.subarray(budget);
+                queuedBytes -= budget;
+                budget = 0;
+            }
+        }
+
+        if (pendingWriteCb && queuedBytes <= maxQueuedBytes * 0.75) {
+            const cb = pendingWriteCb;
+            pendingWriteCb = null;
+            cb();
+        }
+    }, tickMs);
+    if (typeof timer.unref === 'function') {
+        timer.unref();
+    }
+
     const sink = new Writable({
-        write(_chunk, _enc, cb) {
+        write(chunk, _enc, cb) {
+            queue.push(chunk);
+            queuedBytes += chunk.length;
+            if (queuedBytes <= maxQueuedBytes) {
+                cb();
+                return;
+            }
+            pendingWriteCb = cb;
+        },
+        final(cb) {
+            clearInterval(timer);
+            queue.length = 0;
+            queuedBytes = 0;
             cb();
         },
+        destroy(err, cb) {
+            clearInterval(timer);
+            queue.length = 0;
+            queuedBytes = 0;
+            cb(err);
+        },
     });
-    guardStreamErrors(sink, 'discard sink');
+    guardStreamErrors(sink, label);
     return sink;
 }
 
@@ -177,8 +251,25 @@ function tearDownFfmpegPipe(rt) {
 /**
  * @param {GuildSpotifyRuntime} rt
  */
+function tearDownSinkPipe(rt) {
+    if (rt.sinkPipeUnpipe) {
+        try {
+            rt.sinkPipeUnpipe();
+        } catch {}
+        rt.sinkPipeUnpipe = null;
+    }
+    try {
+        rt.discard?.destroy();
+    } catch {}
+    rt.discard = null;
+}
+
+/**
+ * @param {GuildSpotifyRuntime} rt
+ */
 function tearDownPipes(rt) {
     tearDownFfmpegPipe(rt);
+    tearDownSinkPipe(rt);
     if (rt.librespotPipeUnpipe) {
         try {
             rt.librespotPipeUnpipe();
@@ -188,10 +279,6 @@ function tearDownPipes(rt) {
     try {
         rt.librespot?.stdout?.unpipe();
     } catch {}
-    try {
-        rt.discard?.destroy();
-    } catch {}
-    rt.discard = null;
     try {
         rt.pcmBridge?.destroy();
     } catch {}
@@ -211,7 +298,20 @@ function wireLibrespotPcmBridge(guildId, rt) {
     const bridge = new PassThrough({ highWaterMark: 1024 * 1024 });
     guardStreamErrors(bridge, `${guildId} pcm bridge`);
     rt.pcmBridge = bridge;
-    rt.librespotPipeUnpipe = safePipe(rt.librespot.stdout, bridge);
+    rt.librespotPipeUnpipe = safePipe(rt.librespot.stdout, bridge, {
+        keepSrcConnected: true,
+    });
+}
+
+/**
+ * @param {string} guildId
+ * @param {GuildSpotifyRuntime} rt
+ */
+function startStandbySink(guildId, rt) {
+    wireLibrespotPcmBridge(guildId, rt);
+    tearDownSinkPipe(rt);
+    rt.discard = createPacedDiscardSink(`${guildId} paced discard`);
+    rt.sinkPipeUnpipe = safePipe(rt.pcmBridge, rt.discard);
 }
 
 /**
@@ -219,6 +319,9 @@ function wireLibrespotPcmBridge(guildId, rt) {
  * @param {boolean} [unlink]
  */
 async function stopGuild(guildId, unlink = false) {
+    const { cancelPendingOAuth } = require('./spotifyLibrespotOAuth');
+    cancelPendingOAuth(guildId);
+
     const rt = runtimes.get(guildId);
     if (rt) {
         if (rt.tokenRefreshTimer) {
@@ -451,6 +554,55 @@ function scheduleFfmpegRestart(guildId, rt, player) {
 }
 
 /**
+ * Rewire playback output without restarting librespot (avoids Spotify NEW_SESSION churn).
+ * @param {string} guildId
+ * @param {ConnectMode} mode
+ * @param {import('@discordjs/voice').AudioPlayer} [player]
+ */
+async function switchConnectMode(guildId, mode, player) {
+    const rt = runtimes.get(guildId);
+    if (!rt || !isActive(guildId)) {
+        await startSession(guildId, mode, player);
+        return;
+    }
+
+    if (rt.mode === mode) {
+        if (mode === 'discord' && player && !rt.ffmpeg) {
+            rt.player = player;
+            startDiscordFfmpeg(guildId, rt, player);
+        }
+        return;
+    }
+
+    wireLibrespotPcmBridge(guildId, rt);
+
+    if (mode === 'discord') {
+        if (!player) {
+            throw new Error('Discord player is required for voice output.');
+        }
+        const { stopAndClear } = require('./youtubeQueue');
+        stopAndClear(guildId);
+        tearDownSinkPipe(rt);
+        rt.player = player;
+        rt.mode = 'discord';
+        startDiscordFfmpeg(guildId, rt, player);
+        console.log(
+            `[spotify:${guildId}] switched Connect device to discord voice output`
+        );
+        return;
+    }
+
+    tearDownFfmpegPipe(rt);
+    killChild(rt.ffmpeg);
+    rt.ffmpeg = null;
+    rt.player = null;
+    rt.mode = 'standby';
+    startStandbySink(guildId, rt);
+    console.log(`[spotify:${guildId}] switched Connect device to standby`);
+}
+
+/**
+ * @param {string} guildId
  * @param {import('node:child_process').ChildProcess} librespot
  * @param {GuildSpotifyRuntime} rt
  */
@@ -488,7 +640,11 @@ async function startSession(guildId, mode, player) {
     }
 
     const existing = runtimes.get(guildId);
-    if (existing?.mode === mode && isActive(guildId)) {
+    if (existing && isActive(guildId)) {
+        if (existing.mode !== mode) {
+            await switchConnectMode(guildId, mode, player);
+            return;
+        }
         if (mode === 'discord' && player && existing.ffmpeg) {
             return;
         }
@@ -526,6 +682,7 @@ async function startSession(guildId, mode, player) {
         playerErrorHandler: null,
         playerStateHandler: null,
         librespotPipeUnpipe: null,
+        sinkPipeUnpipe: null,
         ffmpegPipeUnpipe: null,
         restartingFfmpeg: false,
         lastLog: '',
@@ -537,8 +694,7 @@ async function startSession(guildId, mode, player) {
     guardStreamErrors(librespot.stdout, `${guildId} librespot stdout`);
 
     if (mode === 'standby') {
-        rt.discard = createDiscardSink();
-        rt.librespotPipeUnpipe = safePipe(librespot.stdout, rt.discard);
+        startStandbySink(guildId, rt);
     } else {
         if (!player) {
             killChild(librespot);
@@ -674,8 +830,10 @@ async function ensureConnectDevice(guildId) {
  * @param {import('@discordjs/voice').AudioPlayer} player
  */
 async function startDiscordOutput(guildId, player) {
-    const { stopAndClear } = require('./youtubeQueue');
-    stopAndClear(guildId);
+    if (isActive(guildId)) {
+        await switchConnectMode(guildId, 'discord', player);
+        return;
+    }
     await startSession(guildId, 'discord', player);
 }
 
@@ -687,7 +845,7 @@ async function stopDiscordOutput(guildId) {
         return;
     }
     if (getConnectMode(guildId) === 'discord' && isLinked(guildId)) {
-        await startSession(guildId, 'standby');
+        await switchConnectMode(guildId, 'standby');
     } else if (isActive(guildId)) {
         await stopGuild(guildId, false);
     }
