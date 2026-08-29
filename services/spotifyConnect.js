@@ -1,5 +1,5 @@
 const { spawn } = require('node:child_process');
-const { Writable } = require('node:stream');
+const { Writable, PassThrough } = require('node:stream');
 const { createAudioResource, StreamType } = require('@discordjs/voice');
 const ffmpegStatic = require('ffmpeg-static');
 const {
@@ -23,12 +23,14 @@ const PCM_CHANNELS = 2;
  *   librespot: import('node:child_process').ChildProcess,
  *   ffmpeg: import('node:child_process').ChildProcess | null,
  *   discard: import('node:stream').Writable | null,
+ *   pcmBridge: import('node:stream').PassThrough | null,
  *   mode: ConnectMode,
  *   tokenRefreshTimer: NodeJS.Timeout | null,
  *   player: import('@discordjs/voice').AudioPlayer | null,
  *   playerErrorHandler: ((err: unknown) => void) | null,
  *   playerStateHandler: ((old: unknown, nw: unknown) => void) | null,
- *   pipeUnpipe: (() => void) | null,
+ *   librespotPipeUnpipe: (() => void) | null,
+ *   ffmpegPipeUnpipe: (() => void) | null,
  *   restartingFfmpeg: boolean,
  *   lastLog: string,
  *   startedAt: number,
@@ -163,12 +165,25 @@ function killChild(child) {
 /**
  * @param {GuildSpotifyRuntime} rt
  */
-function tearDownPipes(rt) {
-    if (rt.pipeUnpipe) {
+function tearDownFfmpegPipe(rt) {
+    if (rt.ffmpegPipeUnpipe) {
         try {
-            rt.pipeUnpipe();
+            rt.ffmpegPipeUnpipe();
         } catch {}
-        rt.pipeUnpipe = null;
+        rt.ffmpegPipeUnpipe = null;
+    }
+}
+
+/**
+ * @param {GuildSpotifyRuntime} rt
+ */
+function tearDownPipes(rt) {
+    tearDownFfmpegPipe(rt);
+    if (rt.librespotPipeUnpipe) {
+        try {
+            rt.librespotPipeUnpipe();
+        } catch {}
+        rt.librespotPipeUnpipe = null;
     }
     try {
         rt.librespot?.stdout?.unpipe();
@@ -177,6 +192,26 @@ function tearDownPipes(rt) {
         rt.discard?.destroy();
     } catch {}
     rt.discard = null;
+    try {
+        rt.pcmBridge?.destroy();
+    } catch {}
+    rt.pcmBridge = null;
+}
+
+/**
+ * Keep librespot stdout on a persistent bridge so ffmpeg restarts never EPIPE librespot.
+ * @param {string} guildId
+ * @param {GuildSpotifyRuntime} rt
+ */
+function wireLibrespotPcmBridge(guildId, rt) {
+    if (rt.pcmBridge && rt.librespotPipeUnpipe) {
+        return;
+    }
+
+    const bridge = new PassThrough({ highWaterMark: 1024 * 1024 });
+    guardStreamErrors(bridge, `${guildId} pcm bridge`);
+    rt.pcmBridge = bridge;
+    rt.librespotPipeUnpipe = safePipe(rt.librespot.stdout, bridge);
 }
 
 /**
@@ -255,7 +290,8 @@ function startDiscordFfmpeg(guildId, rt, player) {
         throw new Error('ffmpeg-static is missing; cannot pipe Spotify audio to Discord.');
     }
 
-    tearDownPipes(rt);
+    wireLibrespotPcmBridge(guildId, rt);
+    tearDownFfmpegPipe(rt);
     killChild(rt.ffmpeg);
     rt.ffmpeg = null;
 
@@ -287,7 +323,7 @@ function startDiscordFfmpeg(guildId, rt, player) {
     guardStreamErrors(ffmpeg.stdin, `${guildId} ffmpeg stdin`);
     guardStreamErrors(ffmpeg.stdout, `${guildId} ffmpeg stdout`);
 
-    rt.pipeUnpipe = safePipe(rt.librespot.stdout, ffmpeg.stdin);
+    rt.ffmpegPipeUnpipe = safePipe(rt.pcmBridge, ffmpeg.stdin);
 
     ffmpeg.stderr.on('data', (chunk) => {
         const t = chunk.toString().trim();
@@ -310,12 +346,7 @@ function startDiscordFfmpeg(guildId, rt, player) {
             return;
         }
         current.ffmpeg = null;
-        if (current.pipeUnpipe) {
-            try {
-                current.pipeUnpipe();
-            } catch {}
-            current.pipeUnpipe = null;
-        }
+        tearDownFfmpegPipe(current);
 
         if (
             current.mode === 'discord' &&
@@ -359,7 +390,34 @@ function startDiscordFfmpeg(guildId, rt, player) {
         player.on('error', rt.playerErrorHandler);
     }
 
-    player.play(resource);
+    const startPlayback = () => {
+        const current = runtimes.get(guildId);
+        if (!current || current.ffmpeg !== ffmpeg) {
+            return;
+        }
+        player.play(resource);
+    };
+
+    if (ffmpeg.stdout.readableLength > 0) {
+        startPlayback();
+        return;
+    }
+
+    const onReadable = () => {
+        if (ffmpeg.stdout.readableLength > 0) {
+            ffmpeg.stdout.off('readable', onReadable);
+            startPlayback();
+        }
+    };
+    ffmpeg.stdout.on('readable', onReadable);
+
+    const startTimeout = setTimeout(() => {
+        ffmpeg.stdout.off('readable', onReadable);
+        startPlayback();
+    }, 2_000);
+    if (typeof startTimeout.unref === 'function') {
+        startTimeout.unref();
+    }
 }
 
 /**
@@ -461,12 +519,14 @@ async function startSession(guildId, mode, player) {
         librespot,
         ffmpeg: null,
         discard: null,
+        pcmBridge: null,
         mode,
         player: player ?? null,
         tokenRefreshTimer: null,
         playerErrorHandler: null,
         playerStateHandler: null,
-        pipeUnpipe: null,
+        librespotPipeUnpipe: null,
+        ffmpegPipeUnpipe: null,
         restartingFfmpeg: false,
         lastLog: '',
         startedAt: Date.now(),
@@ -478,7 +538,7 @@ async function startSession(guildId, mode, player) {
 
     if (mode === 'standby') {
         rt.discard = createDiscardSink();
-        rt.pipeUnpipe = safePipe(librespot.stdout, rt.discard);
+        rt.librespotPipeUnpipe = safePipe(librespot.stdout, rt.discard);
     } else {
         if (!player) {
             killChild(librespot);
@@ -614,6 +674,8 @@ async function ensureConnectDevice(guildId) {
  * @param {import('@discordjs/voice').AudioPlayer} player
  */
 async function startDiscordOutput(guildId, player) {
+    const { stopAndClear } = require('./youtubeQueue');
+    stopAndClear(guildId);
     await startSession(guildId, 'discord', player);
 }
 
