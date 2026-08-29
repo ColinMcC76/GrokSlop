@@ -303,6 +303,40 @@ function cancelPendingOAuth(guildId) {
 }
 
 /**
+ * @param {import('node:child_process').ChildProcess} proc
+ * @param {number} timeoutMs
+ */
+function waitForProcessExit(proc, timeoutMs = 5_000) {
+    return new Promise((resolve) => {
+        if (proc.exitCode != null || proc.signalCode != null) {
+            resolve();
+            return;
+        }
+        const timer = setTimeout(resolve, timeoutMs);
+        proc.once('close', () => {
+            clearTimeout(timer);
+            resolve();
+        });
+    });
+}
+
+/**
+ * Kill the headless OAuth librespot and wait until it exits.
+ * @param {string} guildId
+ */
+async function cancelPendingOAuthAndWait(guildId) {
+    const pending = pendingByGuild.get(guildId);
+    if (!pending) {
+        return;
+    }
+    try {
+        pending.proc.kill('SIGKILL');
+    } catch {}
+    pendingByGuild.delete(guildId);
+    await waitForProcessExit(pending.proc, 5_000);
+}
+
+/**
  * @param {string} raw
  */
 function normalizeLibrespotRedirect(raw) {
@@ -356,7 +390,7 @@ async function completeHeadlessOAuth(guildId, redirectRaw) {
         let combined = '';
         let unwire = () => {};
 
-        const finish = (err) => {
+        const finish = async (err) => {
             if (settled) {
                 return;
             }
@@ -375,9 +409,9 @@ async function completeHeadlessOAuth(guildId, redirectRaw) {
             }
 
             try {
-                proc.kill('SIGTERM');
+                proc.kill('SIGKILL');
             } catch {}
-
+            await waitForProcessExit(proc, 5_000);
             resolve();
         };
 
@@ -456,6 +490,7 @@ module.exports = {
     startHeadlessOAuth,
     completeHeadlessOAuth,
     cancelPendingOAuth,
+    cancelPendingOAuthAndWait,
     isLibrespotOAuthPending,
     normalizeLibrespotRedirect,
 };

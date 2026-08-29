@@ -8,6 +8,7 @@ const {
     completeHeadlessOAuth,
     isLibrespotOAuthPending,
     clearLibrespotCredentials,
+    cancelPendingOAuthAndWait,
 } = require('./spotifyLibrespotOAuth');
 
 /** @type {Map<string, { guildId: string, userId: string, createdAt: number }>} */
@@ -223,9 +224,14 @@ async function completeLibrespotLink(client, guildId, userId) {
         ensureConnectDevice,
         attachIfLinkedInVoice,
         isActive,
+        stopGuild,
     } = require('./spotifyConnect');
 
     markGuildLinkedWithLibrespot(guildId, userId);
+
+    await cancelPendingOAuthAndWait(guildId);
+    await stopGuild(guildId, false);
+    await new Promise((r) => setTimeout(r, 500));
 
     let connectError = null;
     try {
@@ -275,6 +281,7 @@ async function completeLibrespotLink(client, guildId, userId) {
  */
 async function beginSpotifyLink(guildId, userId) {
     const { stopGuild } = require('./spotifyConnect');
+    await cancelPendingOAuthAndWait(guildId);
     await stopGuild(guildId, false);
     clearLibrespotCredentials(guildId);
     createOAuthState(guildId, userId);
