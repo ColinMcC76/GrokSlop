@@ -10,7 +10,7 @@ const {
     listSubscriptions,
     setDiscordChannel,
     resolveDiscordChannel,
-    pollAll,
+    inspectAndPost,
 } = require('../services/youtubeFeed');
 const config = require('../config');
 
@@ -27,6 +27,73 @@ function feedChannelHint() {
 function pollMinutes() {
     const ms = Number(config.youtubeFeedPollMs) || 5 * 60 * 1000;
     return Math.max(1, Math.round(ms / 60_000));
+}
+
+/**
+ * @param {string} title
+ */
+function clipTitle(title, max = 80) {
+    const t = String(title || '').replace(/\s+/g, ' ').trim() || '(untitled)';
+    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+function formatVideoDate(ms) {
+    if (!ms) {
+        return '';
+    }
+    return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * @param {{ dest: import('discord.js').GuildTextBasedChannel | null, canSend: boolean, subscriptions: number, posted: number, reports: Array<Record<string, any>> }} result
+ */
+function formatCheckReport(result) {
+    const destLine = result.dest
+        ? result.canSend
+            ? `Post channel: ${result.dest}`
+            : `Post channel: ${result.dest} (missing Send Messages)`
+        : `No post channel — create **${feedChannelHint()}** or run \`/ytfeed channel\`.`;
+
+    const blocks = result.reports.map((report) => {
+        if (!report.ok) {
+            return `**${report.title}** \`${report.channelId}\`\n• fetch failed: ${report.error}`;
+        }
+
+        const postedNote =
+            report.posted > 0
+                ? `posted **${report.posted}** now`
+                : report.unseenCount > 0
+                  ? `${report.unseenCount} new, not posted`
+                  : 'nothing new to post';
+
+        const lines = (report.latest || []).map((video, index) => {
+            let status = 'already posted';
+            if (!video.wasSeen && report.posted > 0) {
+                status = 'posted now';
+            } else if (!video.wasSeen) {
+                status = 'NEW, not posted yet';
+            } else if (
+                index === 0 &&
+                report.unseenCount === 0 &&
+                report.posted > 0
+            ) {
+                status = 'already posted — force-sent';
+            }
+            const when = formatVideoDate(video.publishedMs);
+            const date = when ? ` (${when})` : '';
+            return `• ${status} — ${clipTitle(video.title)}${date}\n  ${video.url}`;
+        });
+
+        const body =
+            lines.length > 0
+                ? lines.join('\n')
+                : '• feed loaded but listed no videos';
+
+        return `**${report.title}** \`${report.channelId}\`\nvia ${report.via} — ${postedNote}\n${body}`;
+    });
+
+    const header = `Checked ${result.subscriptions} channel(s). ${destLine}`;
+    return `${header}\n\n${blocks.join('\n\n')}`.slice(0, 1900);
 }
 
 module.exports = {
@@ -81,7 +148,25 @@ module.exports = {
         .addSubcommand((sub) =>
             sub
                 .setName('check')
-                .setDescription('Poll watched channels now instead of waiting')
+                .setDescription(
+                    'Fetch feeds now, show what is new, and post anything not yet posted'
+                )
+                .addStringOption((o) =>
+                    o
+                        .setName('channel')
+                        .setDescription('Check one watched channel (default: all)')
+                        .setRequired(false)
+                        .setAutocomplete(true)
+                        .setMaxLength(400)
+                )
+                .addBooleanOption((o) =>
+                    o
+                        .setName('force')
+                        .setDescription(
+                            'Also post the newest video even if it was already recorded'
+                        )
+                        .setRequired(false)
+                )
         ),
 
     /**
@@ -237,36 +322,19 @@ module.exports = {
                 requireManageGuild(interaction);
                 await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-                const dest = await resolveDiscordChannel(
-                    interaction.client,
-                    guildId
-                );
-                if (!dest && listSubscriptions(guildId).length > 0) {
-                    await interaction.editReply(
-                        `No post channel found. Create **${feedChannelHint()}** or run \`/ytfeed channel\` first.`
-                    );
-                    return;
-                }
-
-                const result = await pollAll(interaction.client, guildId);
-                if (result.subscriptions === 0) {
+                if (listSubscriptions(guildId).length === 0) {
                     await interaction.editReply(
                         'Not watching any YouTube channels yet. Use `/ytfeed add`.'
                     );
                     return;
                 }
 
-                const destNote = dest ? ` in ${dest}` : '';
-                if (result.posted === 0) {
-                    await interaction.editReply(
-                        `Checked ${result.subscriptions} channel(s)${destNote}. No new videos.`
-                    );
-                    return;
-                }
+                const result = await inspectAndPost(interaction.client, guildId, {
+                    channelInput: interaction.options.getString('channel'),
+                    forceLatest: Boolean(interaction.options.getBoolean('force')),
+                });
 
-                await interaction.editReply(
-                    `Checked ${result.subscriptions} channel(s) and posted **${result.posted}** new video(s)${destNote}.`
-                );
+                await interaction.editReply(formatCheckReport(result));
             }
         } catch (err) {
             const msg = err?.message || String(err);

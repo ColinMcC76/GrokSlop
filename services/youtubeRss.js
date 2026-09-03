@@ -605,14 +605,14 @@ async function fetchFeedByUrl(feedUrl, knownId) {
     const rss = await fetchRssXmlFromUrls(urls);
     if (rss) {
         logFetchViaOnce(rss.via);
-        return stampParsedFeed(rss.xml, knownId);
+        return { ...stampParsedFeed(rss.xml, knownId), via: rss.via };
     }
 
     if (knownId) {
         const fromYtdlp = await tryYtdlpFeed(knownId);
         if (fromYtdlp) {
             logFetchViaOnce('yt-dlp');
-            return fromYtdlp;
+            return { ...fromYtdlp, via: 'yt-dlp' };
         }
     }
 
