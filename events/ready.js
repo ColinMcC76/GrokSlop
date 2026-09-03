@@ -3,6 +3,7 @@ const { initSpotifyLink } = require('../services/spotifyLink');
 const { listLinkedGuildIds, isConfigured } = require('../services/spotifyAuth');
 const { ensureConnectDevice } = require('../services/spotifyConnect');
 const { hasLibrespotCredentials } = require('../services/spotifyLibrespotOAuth');
+const { startYoutubeFeed } = require('../services/youtubeFeed');
 
 module.exports = {
     name: Events.ClientReady,
@@ -24,6 +25,7 @@ module.exports = {
         }
 
         initSpotifyLink(client);
+        startYoutubeFeed(client);
 
         if (isConfigured()) {
             for (const guildId of listLinkedGuildIds()) {

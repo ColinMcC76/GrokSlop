@@ -5,6 +5,21 @@ const { logError } = require('../utils/errorLog');
 module.exports = {
     name: Events.InteractionCreate,
     async execute(interaction) {
+        if (interaction.isAutocomplete()) {
+            const command = interaction.client.commands.get(interaction.commandName);
+            if (!command?.autocomplete) return;
+            try {
+                await command.autocomplete(interaction);
+            } catch (error) {
+                logError('autocomplete', error, {
+                    command: interaction.commandName,
+                    guildId: interaction.guildId,
+                    userId: interaction.user?.id,
+                });
+            }
+            return;
+        }
+
         if (!interaction.isChatInputCommand()) return;
 
         const command = interaction.client.commands.get(interaction.commandName);

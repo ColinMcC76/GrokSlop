@@ -97,6 +97,33 @@ function migrate() {
             title TEXT,
             updated_at INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS youtube_feed_subscriptions (
+            guild_id TEXT NOT NULL,
+            yt_channel_id TEXT NOT NULL,
+            yt_channel_title TEXT,
+            added_by TEXT,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, yt_channel_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS youtube_feed_settings (
+            guild_id TEXT PRIMARY KEY,
+            discord_channel_id TEXT,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS youtube_feed_seen (
+            guild_id TEXT NOT NULL,
+            video_id TEXT NOT NULL,
+            yt_channel_id TEXT,
+            published_at INTEGER,
+            posted_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, video_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_youtube_feed_seen_posted
+            ON youtube_feed_seen(posted_at);
     `);
 }
 

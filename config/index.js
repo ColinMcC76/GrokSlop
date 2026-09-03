@@ -12,5 +12,9 @@ module.exports = {
     cooldownMs: 8000,
     maxPromptCharsPerMessage: 1800,
     guildMemoryLimit: 20,
-    userMemoryLimit: 10
+    userMemoryLimit: 10,
+    /** How often to poll YouTube RSS for new uploads. */
+    youtubeFeedPollMs: Number(process.env.YOUTUBE_FEED_POLL_MS) || 5 * 60 * 1000,
+    /** Fallback Discord channel name when no destination is set with /ytfeed. */
+    youtubeFeedChannelName: process.env.YOUTUBE_FEED_CHANNEL_NAME || 'youtube-feed'
 };
