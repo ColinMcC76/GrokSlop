@@ -82,6 +82,8 @@ const pruneSeenStmt = db.prepare(`
 /** @type {NodeJS.Timeout | null} */
 let pollTimer = null;
 let inFlight = false;
+/** @type {Set<string>} */
+const pollFailNotified = new Set();
 
 /**
  * @param {string} guildId
@@ -376,9 +378,21 @@ async function pollSubscription(guildId, sub, dest) {
         return 0;
     }
 
-    let posted = 0;
     const channelName = feed.channelTitle || sub.yt_channel_title || 'YouTube';
-    for (const entry of fresh) {
+    return postEntries(guildId, sub, dest, fresh, channelName);
+}
+
+/**
+ * @param {string} guildId
+ * @param {{ yt_channel_id: string }} sub
+ * @param {import('discord.js').GuildTextBasedChannel} dest
+ * @param {Array<{ videoId: string, publishedMs?: number }>} entries
+ * @param {string} channelName
+ * @returns {Promise<number>}
+ */
+async function postEntries(guildId, sub, dest, entries, channelName) {
+    let posted = 0;
+    for (const entry of entries) {
         try {
             await dest.send({
                 content: formatNewVideoMessage(channelName, entry.videoId),
@@ -402,6 +416,125 @@ async function pollSubscription(guildId, sub, dest) {
         }
     }
     return posted;
+}
+
+/**
+ * Fetch each watched channel now, report latest videos, and post any not yet posted.
+ * @param {import('discord.js').Client} client
+ * @param {string} guildId
+ * @param {{ channelInput?: string | null, forceLatest?: boolean }} [opts]
+ */
+async function inspectAndPost(client, guildId, opts = {}) {
+    const dest = await resolveDiscordChannel(client, guildId);
+    let subs = listSubscriptions(guildId);
+
+    if (opts.channelInput) {
+        const raw = String(opts.channelInput).trim();
+        const match =
+            subs.find((s) => s.yt_channel_id === raw) ||
+            subs.find(
+                (s) =>
+                    (s.yt_channel_title || '').toLowerCase() === raw.toLowerCase()
+            );
+        if (match) {
+            subs = [match];
+        } else {
+            const resolved = await resolveChannelId(raw).catch(() => null);
+            const byId = resolved
+                ? subs.find((s) => s.yt_channel_id === resolved)
+                : null;
+            if (!byId) {
+                throw new Error(
+                    'That channel is not on the watch list. Use `/ytfeed list` or `/ytfeed add` first.'
+                );
+            }
+            subs = [byId];
+        }
+    }
+
+    /** @type {Array<Record<string, unknown>>} */
+    const reports = [];
+    let posted = 0;
+
+    for (const sub of subs) {
+        try {
+            const feed = await fetchChannelFeed(sub.yt_channel_id);
+            if (feed.channelTitle && feed.channelTitle !== sub.yt_channel_title) {
+                updateSubscriptionTitle.run({
+                    guildId,
+                    ytChannelId: sub.yt_channel_id,
+                    ytChannelTitle: feed.channelTitle,
+                });
+                sub.yt_channel_title = feed.channelTitle;
+            }
+
+            const newestFirst = [...feed.entries].reverse();
+            const unseen = feed.entries.filter(
+                (entry) => !hasSeen(guildId, entry.videoId)
+            );
+            const latestPreview = newestFirst.slice(0, 3).map((entry) => ({
+                videoId: entry.videoId,
+                title: entry.title || entry.videoId,
+                url: entry.url,
+                publishedMs: entry.publishedMs || 0,
+                wasSeen: hasSeen(guildId, entry.videoId),
+            }));
+            const channelName =
+                feed.channelTitle || sub.yt_channel_title || 'YouTube';
+
+            let justPosted = 0;
+            if (dest && canSend(dest) && unseen.length > 0) {
+                justPosted = await postEntries(
+                    guildId,
+                    sub,
+                    dest,
+                    unseen,
+                    channelName
+                );
+            } else if (
+                dest &&
+                canSend(dest) &&
+                opts.forceLatest &&
+                newestFirst[0]
+            ) {
+                justPosted = await postEntries(
+                    guildId,
+                    sub,
+                    dest,
+                    [newestFirst[0]],
+                    channelName
+                );
+            }
+
+            posted += justPosted;
+            pollFailNotified.delete(`${guildId}:${sub.yt_channel_id}`);
+
+            reports.push({
+                ok: true,
+                title: channelName,
+                channelId: sub.yt_channel_id,
+                via: feed.via || 'unknown',
+                latest: latestPreview,
+                unseenCount: unseen.length,
+                posted: justPosted,
+            });
+        } catch (err) {
+            reports.push({
+                ok: false,
+                title: sub.yt_channel_title || sub.yt_channel_id,
+                channelId: sub.yt_channel_id,
+                error: err?.message || String(err),
+            });
+        }
+    }
+
+    return {
+        dest,
+        canSend: dest ? canSend(dest) : false,
+        subscriptions: subs.length,
+        posted,
+        reports,
+    };
 }
 
 /**
@@ -434,12 +567,17 @@ async function runPoll(client, onlyGuildId) {
 
         try {
             posted += await pollSubscription(sub.guild_id, sub, dest || null);
+            pollFailNotified.delete(`${sub.guild_id}:${sub.yt_channel_id}`);
         } catch (err) {
             errors += 1;
-            logError('youtubeFeed.poll', err, {
-                guildId: sub.guild_id,
-                ytChannelId: sub.yt_channel_id,
-            });
+            const key = `${sub.guild_id}:${sub.yt_channel_id}`;
+            if (!pollFailNotified.has(key)) {
+                pollFailNotified.add(key);
+                logWarn(
+                    'youtubeFeed.poll',
+                    `${sub.yt_channel_title || sub.yt_channel_id}: ${err.message || err}`
+                );
+            }
         }
     }
 
@@ -487,9 +625,9 @@ function startYoutubeFeed(client) {
         inFlight = true;
         try {
             const result = await pollAll(client);
-            if (result.posted > 0 || result.errors > 0) {
+            if (result.posted > 0) {
                 console.log(
-                    `[youtubeFeed] poll complete — ${result.subscriptions} channel(s), posted ${result.posted}, errors ${result.errors}`
+                    `[youtubeFeed] posted ${result.posted} new video(s) from ${result.subscriptions} channel(s)`
                 );
             }
         } catch (err) {
@@ -523,4 +661,5 @@ module.exports = {
     resolveDiscordChannel,
     startYoutubeFeed,
     pollAll,
+    inspectAndPost,
 };

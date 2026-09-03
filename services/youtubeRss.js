@@ -1,9 +1,12 @@
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+
 const YT_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YT_VIDEO_ID_RE = /^[\w-]{11}$/;
 const FETCH_TIMEOUT_MS = 15_000;
-const RSS_RETRY_DELAY_MS = 400;
+const CURL_TIMEOUT_MS = 25_000;
+const YTDLP_TIMEOUT_MS = 45_000;
 const FETCH_HEADERS = {
-    // YouTube's RSS endpoint 404s some Mozilla UAs and strict Accept values.
     'User-Agent': 'GrokSlop-YouTubeFeed/1.0',
     Accept: '*/*',
 };
@@ -11,21 +14,10 @@ const FETCH_HEADERS = {
 const RSS_HEADER_ATTEMPTS = [
     { 'User-Agent': 'GrokSlop-YouTubeFeed/1.0', Accept: '*/*' },
     { 'User-Agent': 'curl/8.7.1', Accept: '*/*' },
-    {
-        'User-Agent': 'GrokSlop-YouTubeFeed/1.0',
-        Accept: 'application/atom+xml, application/xml, text/xml, */*;q=0.8',
-    },
 ];
 
-/**
- * @param {number} ms
- * @returns {Promise<void>}
- */
-function sleep(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
-}
+/** @type {string | null} */
+let loggedFetchVia = null;
 
 /**
  * Strip Discord/markdown wrapping so pasted RSS URLs and IDs still parse.
@@ -69,6 +61,36 @@ function rssUrlForChannel(id) {
         return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(id)}`;
     }
     return `https://www.youtube.com/feeds/videos.xml?playlist_id=${encodeURIComponent(id)}`;
+}
+
+/**
+ * Channel RSS plus the uploads playlist (UC… → UU…), which YouTube sometimes serves when channel_id 404s.
+ * @param {string} id
+ * @returns {string[]}
+ */
+function rssUrlCandidates(id) {
+    /** @type {string[]} */
+    const urls = [];
+    const seen = new Set();
+    const add = (url) => {
+        if (url && !seen.has(url)) {
+            seen.add(url);
+            urls.push(url);
+        }
+    };
+
+    if (YT_CHANNEL_ID_RE.test(id)) {
+        add(rssUrlForChannel(id));
+        add(
+            `https://www.youtube.com/feeds/videos.xml?playlist_id=${encodeURIComponent(`UU${id.slice(2)}`)}`
+        );
+        add(
+            `https://youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(id)}`
+        );
+    } else if (id) {
+        add(rssUrlForChannel(id));
+    }
+    return urls;
 }
 
 /**
@@ -238,13 +260,91 @@ function extractChannelIdFromHtml(html) {
 }
 
 /**
+ * @param {string} via
+ */
+function logFetchViaOnce(via) {
+    if (loggedFetchVia === via) {
+        return;
+    }
+    loggedFetchVia = via;
+    console.log(`[youtubeFeed] reading channel videos via ${via}`);
+}
+
+/**
+ * @param {string} bin
+ * @param {string[]} args
+ * @param {number} timeoutMs
+ * @returns {Promise<{ code: number | null, stdout: string, stderr: string }>}
+ */
+function spawnCollect(bin, args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(bin, args, { windowsHide: true });
+        let stdout = '';
+        let stderr = '';
+        const timer = setTimeout(() => {
+            child.kill();
+            reject(new Error(`${bin} timed out`));
+        }, timeoutMs);
+        child.stdout.on('data', (chunk) => {
+            stdout += chunk;
+        });
+        child.stderr.on('data', (chunk) => {
+            stderr += chunk;
+        });
+        child.on('error', (err) => {
+            clearTimeout(timer);
+            reject(err);
+        });
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            resolve({ code, stdout, stderr });
+        });
+    });
+}
+
+/**
+ * Netscape cookies.txt → Cookie header for youtube.com (same file as /play).
+ * @returns {string}
+ */
+function youtubeCookieHeader() {
+    const file = process.env.YT_DLP_COOKIES?.trim();
+    if (!file) {
+        return '';
+    }
+    try {
+        if (!fs.existsSync(file)) {
+            return '';
+        }
+        const cookies = [];
+        for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+            if (!line || line.startsWith('#')) {
+                continue;
+            }
+            const cols = line.split('\t');
+            if (cols.length < 7 || !/youtube\.com/i.test(cols[0] || '')) {
+                continue;
+            }
+            cookies.push(`${cols[5]}=${String(cols[6] || '').trim()}`);
+        }
+        return cookies.join('; ');
+    } catch {
+        return '';
+    }
+}
+
+/**
  * @param {string} url
  * @param {string} [accept]
  * @returns {Promise<string>}
  */
 async function fetchText(url, accept) {
+    const headers = accept ? { ...FETCH_HEADERS, Accept: accept } : { ...FETCH_HEADERS };
+    const cookie = youtubeCookieHeader();
+    if (cookie) {
+        headers.Cookie = cookie;
+    }
     const res = await fetch(url, {
-        headers: accept ? { ...FETCH_HEADERS, Accept: accept } : FETCH_HEADERS,
+        headers,
         redirect: 'follow',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
@@ -255,38 +355,236 @@ async function fetchText(url, accept) {
 }
 
 /**
- * YouTube RSS often 404/500s depending on Accept / UA; retry a few combinations.
  * @param {string} url
- * @returns {Promise<string>}
+ * @returns {Promise<string | null>}
  */
-async function fetchRssXml(url) {
-    let lastStatus = 0;
-    let lastSnippet = '';
+async function tryNodeFetchRss(url) {
+    const cookie = youtubeCookieHeader();
+    const attempts = cookie
+        ? [
+              { ...RSS_HEADER_ATTEMPTS[0], Cookie: cookie },
+              ...RSS_HEADER_ATTEMPTS,
+          ]
+        : RSS_HEADER_ATTEMPTS;
 
-    for (let round = 0; round < 3; round += 1) {
-        for (const headers of RSS_HEADER_ATTEMPTS) {
-            try {
-                const res = await fetch(url, {
-                    headers,
-                    redirect: 'follow',
-                    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-                });
-                const text = await res.text();
-                lastStatus = res.status;
-                lastSnippet = text.slice(0, 80).replace(/\s+/g, ' ');
-                if (res.ok && /<feed[\s>]/i.test(text)) {
-                    return text;
-                }
-            } catch (err) {
-                lastSnippet = err?.message || String(err);
+    for (const headers of attempts) {
+        try {
+            const res = await fetch(url, {
+                headers,
+                redirect: 'follow',
+                signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            });
+            const text = await res.text();
+            if (res.ok && /<feed[\s>]/i.test(text)) {
+                return text;
             }
-            await sleep(RSS_RETRY_DELAY_MS);
+        } catch {
+            /* try next header / fallback */
         }
     }
+    return null;
+}
 
-    throw new Error(
-        `Could not fetch that YouTube RSS feed (last HTTP ${lastStatus || 'error'}${lastSnippet ? `: ${lastSnippet}` : ''}). Paste a working feed like https://www.youtube.com/feeds/videos.xml?channel_id=UC…`
-    );
+/**
+ * Node's fetch (undici) is often 404/500'd by YouTube RSS on Windows; curl is not.
+ * @param {string} url
+ * @returns {Promise<string | null>}
+ */
+async function tryCurlRss(url) {
+    const bins =
+        process.platform === 'win32' ? ['curl.exe', 'curl'] : ['curl'];
+    const args = [
+        '-sS',
+        '-L',
+        '--compressed',
+        '--max-time',
+        '20',
+        '-A',
+        'curl/8.7.1',
+        '-H',
+        'Accept: */*',
+        url,
+    ];
+    const cookieFile = process.env.YT_DLP_COOKIES?.trim();
+    if (cookieFile && fs.existsSync(cookieFile)) {
+        args.splice(args.length - 1, 0, '-b', cookieFile);
+    }
+
+    for (const bin of bins) {
+        try {
+            const { code, stdout } = await spawnCollect(
+                bin,
+                args,
+                CURL_TIMEOUT_MS
+            );
+            if (code === 0 && /<feed[\s>]/i.test(stdout)) {
+                return stdout;
+            }
+        } catch (err) {
+            if (err && err.code === 'ENOENT') {
+                continue;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * @param {string} raw
+ * @returns {number}
+ */
+function parseYtdlpTimestamp(raw) {
+    if (typeof raw === 'number' && raw > 0) {
+        return raw < 1e12 ? raw * 1000 : raw;
+    }
+    if (typeof raw === 'string' && /^\d{8}$/.test(raw)) {
+        const ms = Date.parse(
+            `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}T00:00:00Z`
+        );
+        return Number.isFinite(ms) ? ms : 0;
+    }
+    return 0;
+}
+
+/**
+ * @param {string} stdout
+ * @param {string} channelId
+ * @returns {{ channelId: string, channelTitle: string, entries: ReturnType<typeof parseYoutubeAtom>['entries'] } | null}
+ */
+function parseYtdlpFlat(stdout, channelId) {
+    /** @type {ReturnType<typeof parseYoutubeAtom>['entries']} */
+    const entries = [];
+    let channelTitle = '';
+    for (const line of String(stdout || '').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('{')) {
+            continue;
+        }
+        let row;
+        try {
+            row = JSON.parse(trimmed);
+        } catch {
+            continue;
+        }
+        const videoId = row.id || row.display_id;
+        if (!YT_VIDEO_ID_RE.test(String(videoId || ''))) {
+            continue;
+        }
+        channelTitle =
+            row.channel ||
+            row.uploader ||
+            row.playlist_channel ||
+            row.playlist_title ||
+            channelTitle;
+        const publishedMs =
+            parseYtdlpTimestamp(row.timestamp) ||
+            parseYtdlpTimestamp(row.release_timestamp) ||
+            parseYtdlpTimestamp(row.upload_date);
+        entries.push({
+            videoId,
+            title: row.title || '',
+            published: publishedMs ? new Date(publishedMs).toISOString() : '',
+            publishedMs,
+            author: row.channel || row.uploader || channelTitle,
+            url: `https://youtu.be/${videoId}`,
+        });
+    }
+    if (entries.length === 0 && !channelTitle) {
+        return null;
+    }
+    entries.sort((a, b) => a.publishedMs - b.publishedMs);
+    return {
+        channelId,
+        channelTitle,
+        entries,
+    };
+}
+
+/**
+ * Same yt-dlp + cookies.txt path /play already uses.
+ * @param {string} channelId
+ * @returns {Promise<ReturnType<typeof parseYtdlpFlat>>}
+ */
+async function tryYtdlpFeed(channelId) {
+    const bin = process.env.YT_DLP_PATH?.trim() || 'yt-dlp';
+    const targets = YT_CHANNEL_ID_RE.test(channelId)
+        ? [
+              `https://www.youtube.com/playlist?list=UU${channelId.slice(2)}`,
+              `https://www.youtube.com/channel/${channelId}/videos`,
+          ]
+        : [`https://www.youtube.com/playlist?list=${channelId}`];
+
+    const cookieFile = process.env.YT_DLP_COOKIES?.trim();
+    const cookieArgs =
+        cookieFile && fs.existsSync(cookieFile)
+            ? ['--cookies', cookieFile]
+            : [];
+
+    for (const target of targets) {
+        try {
+            const { code, stdout } = await spawnCollect(
+                bin,
+                [
+                    '--flat-playlist',
+                    '--dump-json',
+                    '--playlist-end',
+                    '15',
+                    '--no-warnings',
+                    '--ignore-no-formats-error',
+                    '--skip-download',
+                    ...cookieArgs,
+                    target,
+                ],
+                YTDLP_TIMEOUT_MS
+            );
+            if (code !== 0) {
+                continue;
+            }
+            const parsed = parseYtdlpFlat(stdout, channelId);
+            if (parsed) {
+                return parsed;
+            }
+        } catch (err) {
+            if (err && err.code === 'ENOENT') {
+                return null;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * @param {string} xml
+ * @param {string} [knownId]
+ */
+function stampParsedFeed(xml, knownId) {
+    const parsed = parseYoutubeAtom(xml);
+    if (knownId && YT_CHANNEL_ID_RE.test(knownId)) {
+        parsed.channelId = knownId;
+    } else if (!parsed.channelId && knownId) {
+        parsed.channelId = knownId;
+    }
+    return parsed;
+}
+
+/**
+ * @param {string[]} urls
+ * @returns {Promise<{ xml: string, via: string } | null>}
+ */
+async function fetchRssXmlFromUrls(urls) {
+    for (const url of urls) {
+        const xml = await tryNodeFetchRss(url);
+        if (xml) {
+            return { xml, via: 'node-fetch' };
+        }
+    }
+    for (const url of urls) {
+        const xml = await tryCurlRss(url);
+        if (xml) {
+            return { xml, via: 'curl' };
+        }
+    }
+    return null;
 }
 
 /**
@@ -295,14 +593,32 @@ async function fetchRssXml(url) {
  * @returns {Promise<{ channelId: string, channelTitle: string, entries: ReturnType<typeof parseYoutubeAtom>['entries'] }>}
  */
 async function fetchFeedByUrl(feedUrl, knownId) {
-    const xml = await fetchRssXml(feedUrl);
-    const parsed = parseYoutubeAtom(xml);
-    if (knownId && YT_CHANNEL_ID_RE.test(knownId)) {
-        parsed.channelId = knownId;
-    } else if (!parsed.channelId && knownId) {
-        parsed.channelId = knownId;
+    const urls = [feedUrl];
+    if (knownId) {
+        for (const extra of rssUrlCandidates(knownId)) {
+            if (!urls.includes(extra)) {
+                urls.push(extra);
+            }
+        }
     }
-    return parsed;
+
+    const rss = await fetchRssXmlFromUrls(urls);
+    if (rss) {
+        logFetchViaOnce(rss.via);
+        return { ...stampParsedFeed(rss.xml, knownId), via: rss.via };
+    }
+
+    if (knownId) {
+        const fromYtdlp = await tryYtdlpFeed(knownId);
+        if (fromYtdlp) {
+            logFetchViaOnce('yt-dlp');
+            return { ...fromYtdlp, via: 'yt-dlp' };
+        }
+    }
+
+    throw new Error(
+        'YouTube blocked the RSS request (HTTP 404/500 from Node). Restart after this update so GrokSlop can use curl or yt-dlp instead — the same cookies.txt as /play.'
+    );
 }
 
 /**
