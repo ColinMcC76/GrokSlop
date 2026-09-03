@@ -1,7 +1,8 @@
-const { ChannelType, PermissionsBitField } = require('discord.js');
+const { AttachmentBuilder, ChannelType, PermissionsBitField } = require('discord.js');
 const db = require('../storage/db');
 const config = require('../config');
 const { logError, logWarn } = require('../utils/errorLog');
+const { splitDiscordContent } = require('../utils/discordChunks');
 const youtubeRss = require('./youtubeRss');
 const {
     YT_CHANNEL_ID_RE,
@@ -9,6 +10,11 @@ const {
     resolveChannelId,
     formatNewVideoMessage,
 } = youtubeRss;
+const {
+    extractVideoId,
+    fetchYoutubeTranscript,
+    transcriptFileName,
+} = require('./youtubeTranscript');
 
 const DEFAULT_CHANNEL_NAME = 'youtube-feed';
 const SEEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
@@ -214,6 +220,21 @@ function canSend(channel) {
 }
 
 /**
+ * @param {import('discord.js').GuildTextBasedChannel} channel
+ */
+function canAttach(channel) {
+    const me = channel.guild.members.me;
+    if (!me) {
+        return true;
+    }
+    const perms = channel.permissionsFor(me);
+    if (!perms) {
+        return true;
+    }
+    return perms.has(PermissionsBitField.Flags.AttachFiles);
+}
+
+/**
  * @param {string} guildId
  * @param {string} input
  * @param {string} addedBy
@@ -414,8 +435,106 @@ async function postEntries(guildId, sub, dest, entries, channelName) {
             });
             break;
         }
+
+        try {
+            const status = await postTranscriptFollowup(dest, {
+                channelName,
+                videoId: entry.videoId,
+                title: entry.title || '',
+            });
+            console.log(
+                `[youtubeFeed] transcript ${status} for ${entry.videoId}`
+            );
+        } catch (err) {
+            logWarn('youtubeFeed.transcript', err, {
+                videoId: entry.videoId,
+            });
+        }
     }
     return posted;
+}
+
+/**
+ * @param {import('discord.js').GuildTextBasedChannel} dest
+ * @param {{ channelName: string, videoId: string, title?: string }} info
+ * @returns {Promise<string>}
+ */
+async function postTranscriptFollowup(dest, info) {
+    if (process.env.YOUTUBE_FEED_TRANSCRIPT === '0') {
+        return 'disabled';
+    }
+
+    let fetched;
+    try {
+        fetched = await fetchYoutubeTranscript(info.videoId);
+    } catch (err) {
+        await dest.send({
+            content: `📝 No transcript for https://youtu.be/${info.videoId} — ${err.message || err}`.slice(
+                0,
+                1800
+            ),
+            allowedMentions: { parse: [] },
+        });
+        return 'missing';
+    }
+
+    const label = fetched.title || info.title || info.channelName;
+    const header = `📝 Transcript for **${label}** (${fetched.language}, ${fetched.source})`;
+
+    if (fetched.text.length <= 1700) {
+        await dest.send({
+            content: `${header}\n\n${fetched.text}`,
+            allowedMentions: { parse: [] },
+        });
+        return 'inline';
+    }
+
+    if (canAttach(dest)) {
+        const file = new AttachmentBuilder(Buffer.from(fetched.text, 'utf8'), {
+            name: transcriptFileName(info.channelName, info.videoId),
+        });
+        try {
+            await dest.send({
+                content: `${header} — full text attached.`,
+                files: [file],
+                allowedMentions: { parse: [] },
+            });
+            return 'file';
+        } catch (err) {
+            logWarn('youtubeFeed.transcriptFile', err);
+        }
+    }
+
+    const chunks = splitDiscordContent(
+        `${header}\n\n${fetched.text}`,
+        1880
+    ).slice(0, 8);
+    for (const chunk of chunks) {
+        await dest.send({
+            content: chunk,
+            allowedMentions: { parse: [] },
+        });
+    }
+    if (splitDiscordContent(fetched.text, 1880).length > 8) {
+        await dest.send({
+            content: '📝 Transcript truncated (too long for Discord messages).',
+            allowedMentions: { parse: [] },
+        });
+    }
+    return 'chunks';
+}
+
+/**
+ * @param {import('discord.js').GuildTextBasedChannel} dest
+ * @param {string} videoIdOrUrl
+ * @param {string} [channelName]
+ */
+async function postTranscriptToChannel(dest, videoIdOrUrl, channelName) {
+    const videoId = extractVideoId(videoIdOrUrl);
+    return postTranscriptFollowup(dest, {
+        channelName: channelName || 'YouTube',
+        videoId,
+    });
 }
 
 /**
@@ -662,4 +781,5 @@ module.exports = {
     startYoutubeFeed,
     pollAll,
     inspectAndPost,
+    postTranscriptToChannel,
 };
