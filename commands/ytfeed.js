@@ -286,7 +286,7 @@ module.exports = {
 
                 if (rows.length === 0) {
                     await interaction.reply({
-                        content: `Not watching any YouTube channels.\n${destLine}\nAdd one with \`/ytfeed add\`.`,
+                        content: `Not watching any YouTube channels.\n${destLine}\n${briefLine}\nAdd one with \`/ytfeed add\`.`,
                         flags: MessageFlags.Ephemeral,
                     });
                     return;
