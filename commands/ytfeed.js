@@ -11,6 +11,7 @@ const {
     setDiscordChannel,
     resolveDiscordChannel,
     inspectAndPost,
+    postTranscriptToChannel,
 } = require('../services/youtubeFeed');
 const config = require('../config');
 
@@ -166,6 +167,20 @@ module.exports = {
                             'Also post the newest video even if it was already recorded'
                         )
                         .setRequired(false)
+                )
+        )
+        .addSubcommand((sub) =>
+            sub
+                .setName('transcript')
+                .setDescription(
+                    'Pull a YouTube transcript and post it in this channel'
+                )
+                .addStringOption((o) =>
+                    o
+                        .setName('video')
+                        .setDescription('YouTube URL or 11-character video ID')
+                        .setRequired(true)
+                        .setMaxLength(200)
                 )
         ),
 
@@ -335,6 +350,32 @@ module.exports = {
                 });
 
                 await interaction.editReply(formatCheckReport(result));
+                return;
+            }
+
+            if (sub === 'transcript') {
+                requireManageGuild(interaction);
+                await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+                const dest = interaction.channel;
+                if (!dest || !dest.isTextBased()) {
+                    await interaction.editReply(
+                        'Run this in a text channel so I can post the transcript.'
+                    );
+                    return;
+                }
+
+                const video = interaction.options.getString('video', true);
+                const status = await postTranscriptToChannel(dest, video);
+                if (status === 'missing') {
+                    await interaction.editReply(
+                        `Posted a failure note in ${dest}. No usable captions were found.`
+                    );
+                    return;
+                }
+                await interaction.editReply(
+                    `Posted the transcript in ${dest} (${status}).`
+                );
             }
         } catch (err) {
             const msg = err?.message || String(err);
