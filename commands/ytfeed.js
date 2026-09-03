@@ -40,9 +40,11 @@ module.exports = {
                 .addStringOption((o) =>
                     o
                         .setName('channel')
-                        .setDescription('YouTube URL, @handle, or UC… channel ID')
+                        .setDescription(
+                            'RSS URL, channel URL, @handle, or UC… ID'
+                        )
                         .setRequired(true)
-                        .setMaxLength(200)
+                        .setMaxLength(400)
                 )
         )
         .addSubcommand((sub) =>
@@ -52,10 +54,10 @@ module.exports = {
                 .addStringOption((o) =>
                     o
                         .setName('channel')
-                        .setDescription('Channel name, URL, @handle, or UC… ID')
+                        .setDescription('Channel name, RSS URL, @handle, or UC… ID')
                         .setRequired(true)
                         .setAutocomplete(true)
-                        .setMaxLength(200)
+                        .setMaxLength(400)
                 )
         )
         .addSubcommand((sub) =>

@@ -1,11 +1,45 @@
 const YT_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YT_VIDEO_ID_RE = /^[\w-]{11}$/;
 const FETCH_TIMEOUT_MS = 15_000;
+const RSS_RETRY_DELAY_MS = 400;
 const FETCH_HEADERS = {
-    // YouTube's RSS endpoint 404s browser-like Mozilla UAs; a simple client string works.
+    // YouTube's RSS endpoint 404s some Mozilla UAs and strict Accept values.
     'User-Agent': 'GrokSlop-YouTubeFeed/1.0',
-    Accept: 'application/atom+xml, application/xml, text/xml, text/html;q=0.9,*/*;q=0.8',
+    Accept: '*/*',
 };
+
+const RSS_HEADER_ATTEMPTS = [
+    { 'User-Agent': 'GrokSlop-YouTubeFeed/1.0', Accept: '*/*' },
+    { 'User-Agent': 'curl/8.7.1', Accept: '*/*' },
+    {
+        'User-Agent': 'GrokSlop-YouTubeFeed/1.0',
+        Accept: 'application/atom+xml, application/xml, text/xml, */*;q=0.8',
+    },
+];
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+/**
+ * Strip Discord/markdown wrapping so pasted RSS URLs and IDs still parse.
+ * @param {string} raw
+ * @returns {string}
+ */
+function sanitizeInput(raw) {
+    return String(raw || '')
+        .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
+        .trim()
+        .replace(/^<([^>]+)>$/, '$1')
+        .replace(/^['"`]+|['"`]+$/g, '')
+        .trim();
+}
 
 /**
  * YouTube RSS often omits the `UC` prefix on `<yt:channelId>`.
@@ -24,6 +58,62 @@ function normalizeChannelId(id) {
         }
     }
     return raw;
+}
+
+/**
+ * @param {string} id
+ * @returns {string}
+ */
+function rssUrlForChannel(id) {
+    if (YT_CHANNEL_ID_RE.test(id)) {
+        return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(id)}`;
+    }
+    return `https://www.youtube.com/feeds/videos.xml?playlist_id=${encodeURIComponent(id)}`;
+}
+
+/**
+ * @param {URL} url
+ * @returns {{ type: 'channel' | 'playlist' | 'user', id: string, feedUrl: string } | null}
+ */
+function parseYoutubeRssUrl(url) {
+    const host = url.hostname.replace(/^www\./, '').replace(/^m\./, '');
+    if (host !== 'youtube.com') {
+        return null;
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'feeds' || parts[1] !== 'videos.xml') {
+        return null;
+    }
+
+    const channelId = url.searchParams.get('channel_id');
+    if (channelId) {
+        const id = normalizeChannelId(channelId);
+        return {
+            type: 'channel',
+            id,
+            feedUrl: rssUrlForChannel(id),
+        };
+    }
+
+    const playlistId = url.searchParams.get('playlist_id');
+    if (playlistId) {
+        return {
+            type: 'playlist',
+            id: playlistId,
+            feedUrl: rssUrlForChannel(playlistId),
+        };
+    }
+
+    const user = url.searchParams.get('user');
+    if (user) {
+        return {
+            type: 'user',
+            id: user,
+            feedUrl: `https://www.youtube.com/feeds/videos.xml?user=${encodeURIComponent(user)}`,
+        };
+    }
+
+    return null;
 }
 
 /**
@@ -165,11 +255,54 @@ async function fetchText(url, accept) {
 }
 
 /**
- * @param {string} channelId
- * @returns {string}
+ * YouTube RSS often 404/500s depending on Accept / UA; retry a few combinations.
+ * @param {string} url
+ * @returns {Promise<string>}
  */
-function rssUrlForChannel(channelId) {
-    return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`;
+async function fetchRssXml(url) {
+    let lastStatus = 0;
+    let lastSnippet = '';
+
+    for (let round = 0; round < 3; round += 1) {
+        for (const headers of RSS_HEADER_ATTEMPTS) {
+            try {
+                const res = await fetch(url, {
+                    headers,
+                    redirect: 'follow',
+                    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+                });
+                const text = await res.text();
+                lastStatus = res.status;
+                lastSnippet = text.slice(0, 80).replace(/\s+/g, ' ');
+                if (res.ok && /<feed[\s>]/i.test(text)) {
+                    return text;
+                }
+            } catch (err) {
+                lastSnippet = err?.message || String(err);
+            }
+            await sleep(RSS_RETRY_DELAY_MS);
+        }
+    }
+
+    throw new Error(
+        `Could not fetch that YouTube RSS feed (last HTTP ${lastStatus || 'error'}${lastSnippet ? `: ${lastSnippet}` : ''}). Paste a working feed like https://www.youtube.com/feeds/videos.xml?channel_id=UC…`
+    );
+}
+
+/**
+ * @param {string} feedUrl
+ * @param {string} [knownId]
+ * @returns {Promise<{ channelId: string, channelTitle: string, entries: ReturnType<typeof parseYoutubeAtom>['entries'] }>}
+ */
+async function fetchFeedByUrl(feedUrl, knownId) {
+    const xml = await fetchRssXml(feedUrl);
+    const parsed = parseYoutubeAtom(xml);
+    if (knownId && YT_CHANNEL_ID_RE.test(knownId)) {
+        parsed.channelId = knownId;
+    } else if (!parsed.channelId && knownId) {
+        parsed.channelId = knownId;
+    }
+    return parsed;
 }
 
 /**
@@ -177,25 +310,7 @@ function rssUrlForChannel(channelId) {
  * @returns {Promise<{ channelId: string, channelTitle: string, entries: ReturnType<typeof parseYoutubeAtom>['entries'] }>}
  */
 async function fetchChannelFeed(channelId) {
-    let xml;
-    try {
-        xml = await fetchText(
-            rssUrlForChannel(channelId),
-            'application/atom+xml, application/xml, text/xml'
-        );
-    } catch (err) {
-        if (/HTTP 404/.test(err.message || '')) {
-            throw new Error(
-                'No YouTube RSS feed found for that channel. Check the URL, @handle, or UC… ID.'
-            );
-        }
-        throw err;
-    }
-    const parsed = parseYoutubeAtom(xml);
-    parsed.channelId = YT_CHANNEL_ID_RE.test(channelId)
-        ? channelId
-        : parsed.channelId || channelId;
-    return parsed;
+    return fetchFeedByUrl(rssUrlForChannel(channelId), channelId);
 }
 
 /**
@@ -212,14 +327,16 @@ async function fetchChannelIdFromPage(pageUrl) {
 }
 
 /**
- * Resolve a YouTube URL, @handle, or UC… id to a channel id.
+ * Resolve a YouTube RSS URL, channel URL, @handle, or UC… id to a channel/playlist id.
  * @param {string} raw
  * @returns {Promise<string>}
  */
 async function resolveChannelId(raw) {
-    const input = String(raw || '').trim();
+    const input = sanitizeInput(raw);
     if (!input) {
-        throw new Error('Provide a YouTube channel URL, @handle, or channel ID.');
+        throw new Error(
+            'Provide a YouTube RSS URL, channel URL, @handle, or UC… channel ID.'
+        );
     }
 
     if (YT_CHANNEL_ID_RE.test(input)) {
@@ -238,7 +355,7 @@ async function resolveChannelId(raw) {
             return fetchChannelIdFromPage(`https://www.youtube.com/@${input}`);
         }
         throw new Error(
-            'Could not parse that as a YouTube channel. Use a URL, @handle, or UC… channel ID.'
+            'Could not parse that as a YouTube channel. Use an RSS URL, channel URL, @handle, or UC… ID.'
         );
     }
 
@@ -249,6 +366,18 @@ async function resolveChannelId(raw) {
         host !== 'music.youtube.com'
     ) {
         throw new Error('That URL is not a YouTube link.');
+    }
+
+    const rss = parseYoutubeRssUrl(url);
+    if (rss) {
+        if (rss.type === 'channel' || rss.type === 'playlist') {
+            return rss.id;
+        }
+        const feed = await fetchFeedByUrl(rss.feedUrl);
+        if (feed.channelId) {
+            return feed.channelId;
+        }
+        throw new Error('That RSS feed did not include a YouTube channel ID.');
     }
 
     const parts = url.pathname.split('/').filter(Boolean);
@@ -283,7 +412,7 @@ async function resolveChannelId(raw) {
     }
 
     throw new Error(
-        'Could not find a channel in that YouTube URL. Paste a channel page, @handle, or UC… ID.'
+        'Could not find a channel in that YouTube URL. Paste the RSS feed (youtube.com/feeds/videos.xml?channel_id=…), a channel page, @handle, or UC… ID.'
     );
 }
 
@@ -300,10 +429,13 @@ function formatNewVideoMessage(channelName, videoId) {
 module.exports = {
     YT_CHANNEL_ID_RE,
     normalizeChannelId,
+    sanitizeInput,
+    parseYoutubeRssUrl,
     parseYoutubeAtom,
     extractChannelIdFromHtml,
     rssUrlForChannel,
     fetchChannelFeed,
+    fetchFeedByUrl,
     resolveChannelId,
     formatNewVideoMessage,
 };
