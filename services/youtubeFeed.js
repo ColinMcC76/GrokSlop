@@ -82,6 +82,8 @@ const pruneSeenStmt = db.prepare(`
 /** @type {NodeJS.Timeout | null} */
 let pollTimer = null;
 let inFlight = false;
+/** @type {Set<string>} */
+const pollFailNotified = new Set();
 
 /**
  * @param {string} guildId
@@ -434,12 +436,17 @@ async function runPoll(client, onlyGuildId) {
 
         try {
             posted += await pollSubscription(sub.guild_id, sub, dest || null);
+            pollFailNotified.delete(`${sub.guild_id}:${sub.yt_channel_id}`);
         } catch (err) {
             errors += 1;
-            logError('youtubeFeed.poll', err, {
-                guildId: sub.guild_id,
-                ytChannelId: sub.yt_channel_id,
-            });
+            const key = `${sub.guild_id}:${sub.yt_channel_id}`;
+            if (!pollFailNotified.has(key)) {
+                pollFailNotified.add(key);
+                logWarn(
+                    'youtubeFeed.poll',
+                    `${sub.yt_channel_title || sub.yt_channel_id}: ${err.message || err}`
+                );
+            }
         }
     }
 
@@ -487,9 +494,9 @@ function startYoutubeFeed(client) {
         inFlight = true;
         try {
             const result = await pollAll(client);
-            if (result.posted > 0 || result.errors > 0) {
+            if (result.posted > 0) {
                 console.log(
-                    `[youtubeFeed] poll complete — ${result.subscriptions} channel(s), posted ${result.posted}, errors ${result.errors}`
+                    `[youtubeFeed] posted ${result.posted} new video(s) from ${result.subscriptions} channel(s)`
                 );
             }
         } catch (err) {
