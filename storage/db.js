@@ -110,6 +110,7 @@ function migrate() {
         CREATE TABLE IF NOT EXISTS youtube_feed_settings (
             guild_id TEXT PRIMARY KEY,
             discord_channel_id TEXT,
+            summary_channel_id TEXT,
             updated_at INTEGER NOT NULL
         );
 
@@ -128,5 +129,14 @@ function migrate() {
 }
 
 migrate();
+
+function ensureColumn(table, column, definition) {
+    const cols = db.pragma(`table_info(${table})`);
+    if (!cols.some((col) => col.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+}
+
+ensureColumn('youtube_feed_settings', 'summary_channel_id', 'TEXT');
 
 module.exports = db;

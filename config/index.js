@@ -16,5 +16,8 @@ module.exports = {
     /** How often to poll YouTube RSS for new uploads. */
     youtubeFeedPollMs: Number(process.env.YOUTUBE_FEED_POLL_MS) || 5 * 60 * 1000,
     /** Fallback Discord channel name when no destination is set with /ytfeed. */
-    youtubeFeedChannelName: process.env.YOUTUBE_FEED_CHANNEL_NAME || 'youtube-feed'
+    youtubeFeedChannelName: process.env.YOUTUBE_FEED_CHANNEL_NAME || 'youtube-feed',
+    /** Daily transcript brief destination (name match, emoji optional). */
+    youtubeFeedSummaryChannelName:
+        process.env.YOUTUBE_FEED_SUMMARY_CHANNEL_NAME || 'political-spyte-club🥊'
 };
