@@ -15,6 +15,7 @@ const {
     fetchYoutubeTranscript,
     transcriptFileName,
 } = require('./youtubeTranscript');
+const { summarizeYoutubeTranscript } = require('./youtubeBrief');
 
 const DEFAULT_CHANNEL_NAME = 'youtube-feed';
 const SEEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
@@ -56,15 +57,19 @@ const selectSubscription = db.prepare(`
 `);
 
 const upsertSettings = db.prepare(`
-    INSERT INTO youtube_feed_settings (guild_id, discord_channel_id, updated_at)
-    VALUES (@guildId, @discordChannelId, @now)
+    INSERT INTO youtube_feed_settings (
+        guild_id, discord_channel_id, summary_channel_id, updated_at
+    ) VALUES (@guildId, @discordChannelId, @summaryChannelId, @now)
     ON CONFLICT(guild_id) DO UPDATE SET
-        discord_channel_id = excluded.discord_channel_id,
+        discord_channel_id = COALESCE(excluded.discord_channel_id, youtube_feed_settings.discord_channel_id),
+        summary_channel_id = COALESCE(excluded.summary_channel_id, youtube_feed_settings.summary_channel_id),
         updated_at = excluded.updated_at
 `);
 
 const selectSettings = db.prepare(`
-    SELECT discord_channel_id FROM youtube_feed_settings WHERE guild_id = ?
+    SELECT discord_channel_id, summary_channel_id
+    FROM youtube_feed_settings
+    WHERE guild_id = ?
 `);
 
 const insertSeen = db.prepare(`
@@ -137,6 +142,20 @@ function setDiscordChannel(guildId, discordChannelId) {
     upsertSettings.run({
         guildId,
         discordChannelId,
+        summaryChannelId: null,
+        now: Date.now(),
+    });
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} summaryChannelId
+ */
+function setSummaryChannel(guildId, summaryChannelId) {
+    upsertSettings.run({
+        guildId,
+        discordChannelId: null,
+        summaryChannelId,
         now: Date.now(),
     });
 }
@@ -152,21 +171,58 @@ function listSubscriptions(guildId) {
  * @param {import('discord.js').Guild} guild
  * @returns {import('discord.js').GuildTextBasedChannel | null}
  */
-function findNamedFeedChannel(guild) {
-    const wanted = (
-        config.youtubeFeedChannelName || DEFAULT_CHANNEL_NAME
-    ).toLowerCase();
-    const match = guild.channels.cache.find(
-        (ch) =>
-            ch &&
-            typeof ch.isTextBased === 'function' &&
-            ch.isTextBased() &&
-            !ch.isVoiceBased?.() &&
-            ch.name?.toLowerCase() === wanted &&
-            (ch.type === ChannelType.GuildText ||
-                ch.type === ChannelType.GuildAnnouncement)
-    );
+/**
+ * @param {string} name
+ */
+function normalizeChannelName(name) {
+    return String(name || '')
+        .toLowerCase()
+        .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu, '')
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+/**
+ * @param {import('discord.js').Guild} guild
+ * @param {string} wantedName
+ * @returns {import('discord.js').GuildTextBasedChannel | null}
+ */
+function findNamedTextChannel(guild, wantedName) {
+    const exact = wantedName.toLowerCase();
+    const folded = normalizeChannelName(wantedName);
+    const match = guild.channels.cache.find((ch) => {
+        if (
+            !ch ||
+            typeof ch.isTextBased !== 'function' ||
+            !ch.isTextBased() ||
+            ch.isVoiceBased?.() ||
+            (ch.type !== ChannelType.GuildText &&
+                ch.type !== ChannelType.GuildAnnouncement)
+        ) {
+            return false;
+        }
+        const name = ch.name || '';
+        return (
+            name.toLowerCase() === exact ||
+            normalizeChannelName(name) === folded
+        );
+    });
     return match || null;
+}
+
+function findNamedFeedChannel(guild) {
+    return findNamedTextChannel(
+        guild,
+        config.youtubeFeedChannelName || DEFAULT_CHANNEL_NAME
+    );
+}
+
+function findNamedSummaryChannel(guild) {
+    return findNamedTextChannel(
+        guild,
+        config.youtubeFeedSummaryChannelName || 'political-spyte-club🥊'
+    );
 }
 
 /**
@@ -198,6 +254,34 @@ async function resolveDiscordChannel(client, guildId) {
     }
 
     return findNamedFeedChannel(guild);
+}
+
+/**
+ * @param {import('discord.js').Guild | null} guild
+ * @returns {Promise<import('discord.js').GuildTextBasedChannel | null>}
+ */
+async function resolveSummaryChannel(guild) {
+    if (!guild) {
+        return null;
+    }
+
+    if (guild.channels.cache.size === 0) {
+        await guild.channels.fetch().catch(() => null);
+    }
+
+    const settings = getSettings(guild.id);
+    if (settings?.summary_channel_id) {
+        const configured =
+            guild.channels.cache.get(settings.summary_channel_id) ||
+            (await guild.channels
+                .fetch(settings.summary_channel_id)
+                .catch(() => null));
+        if (configured && configured.isTextBased()) {
+            return configured;
+        }
+    }
+
+    return findNamedSummaryChannel(guild);
 }
 
 /**
@@ -460,24 +544,45 @@ async function postEntries(guildId, sub, dest, entries, channelName) {
  * @returns {Promise<string>}
  */
 async function postTranscriptFollowup(dest, info) {
-    if (process.env.YOUTUBE_FEED_TRANSCRIPT === '0') {
-        return 'disabled';
-    }
-
     let fetched;
     try {
         fetched = await fetchYoutubeTranscript(info.videoId);
     } catch (err) {
-        await dest.send({
-            content: `📝 No transcript for https://youtu.be/${info.videoId} — ${err.message || err}`.slice(
-                0,
-                1800
-            ),
-            allowedMentions: { parse: [] },
-        });
+        if (process.env.YOUTUBE_FEED_TRANSCRIPT !== '0') {
+            await dest.send({
+                content: `📝 No transcript for https://youtu.be/${info.videoId} — ${err.message || err}`.slice(
+                    0,
+                    1800
+                ),
+                allowedMentions: { parse: [] },
+            });
+        }
         return 'missing';
     }
 
+    let status = 'fetched';
+    if (process.env.YOUTUBE_FEED_TRANSCRIPT !== '0') {
+        status = await sendTranscriptMessages(dest, fetched, info);
+    }
+
+    try {
+        const briefStatus = await postDailyBrief(dest.guild, fetched, info);
+        console.log(
+            `[youtubeFeed] brief ${briefStatus} for ${info.videoId}`
+        );
+    } catch (err) {
+        logWarn('youtubeFeed.brief', err, { videoId: info.videoId });
+    }
+
+    return status;
+}
+
+/**
+ * @param {import('discord.js').GuildTextBasedChannel} dest
+ * @param {{ title: string, text: string, language: string, source: string, videoId: string }} fetched
+ * @param {{ channelName: string, videoId: string, title?: string }} info
+ */
+async function sendTranscriptMessages(dest, fetched, info) {
     const label = fetched.title || info.title || info.channelName;
     const header = `📝 Transcript for **${label}** (${fetched.language}, ${fetched.source})`;
 
@@ -522,6 +627,49 @@ async function postTranscriptFollowup(dest, info) {
         });
     }
     return 'chunks';
+}
+
+/**
+ * @param {import('discord.js').Guild} guild
+ * @param {{ title: string, text: string, videoId: string }} fetched
+ * @param {{ channelName: string, videoId: string, title?: string }} info
+ */
+async function postDailyBrief(guild, fetched, info) {
+    if (process.env.YOUTUBE_FEED_BRIEF === '0') {
+        return 'disabled';
+    }
+
+    const dest = await resolveSummaryChannel(guild);
+    if (!dest) {
+        logWarn(
+            'youtubeFeed.brief',
+            `No #${config.youtubeFeedSummaryChannelName} channel in guild ${guild?.id}`
+        );
+        return 'no-channel';
+    }
+    if (!canSend(dest)) {
+        logWarn(
+            'youtubeFeed.brief',
+            `Missing Send Messages in #${dest.name} (${dest.id})`
+        );
+        return 'no-perms';
+    }
+
+    const brief = await summarizeYoutubeTranscript({
+        title: fetched.title || info.title || info.channelName,
+        channelName: info.channelName,
+        videoId: info.videoId || fetched.videoId,
+        text: fetched.text,
+    });
+
+    const chunks = splitDiscordContent(brief, 1880);
+    for (const chunk of chunks) {
+        await dest.send({
+            content: chunk,
+            allowedMentions: { parse: [] },
+        });
+    }
+    return 'posted';
 }
 
 /**
@@ -777,7 +925,9 @@ module.exports = {
     listSubscriptions,
     getSettings,
     setDiscordChannel,
+    setSummaryChannel,
     resolveDiscordChannel,
+    resolveSummaryChannel,
     startYoutubeFeed,
     pollAll,
     inspectAndPost,

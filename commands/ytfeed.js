@@ -12,6 +12,8 @@ const {
     resolveDiscordChannel,
     inspectAndPost,
     postTranscriptToChannel,
+    setSummaryChannel,
+    resolveSummaryChannel,
 } = require('../services/youtubeFeed');
 const config = require('../config');
 
@@ -23,6 +25,10 @@ function requireManageGuild(interaction) {
 
 function feedChannelHint() {
     return `#${config.youtubeFeedChannelName || 'youtube-feed'}`;
+}
+
+function briefChannelHint() {
+    return `#${config.youtubeFeedSummaryChannelName || 'political-spyte-club🥊'}`;
 }
 
 function pollMinutes() {
@@ -182,6 +188,39 @@ module.exports = {
                         .setRequired(true)
                         .setMaxLength(200)
                 )
+        )
+        .addSubcommand((sub) =>
+            sub
+                .setName('briefchannel')
+                .setDescription(
+                    'Set the Discord channel for daily transcript briefs'
+                )
+                .addChannelOption((o) =>
+                    o
+                        .setName('destination')
+                        .setDescription(
+                            'Text channel for summaries (default: this channel)'
+                        )
+                        .addChannelTypes(
+                            ChannelType.GuildText,
+                            ChannelType.GuildAnnouncement
+                        )
+                        .setRequired(false)
+                )
+        )
+        .addSubcommand((sub) =>
+            sub
+                .setName('brief')
+                .setDescription(
+                    'Pull a transcript and post a daily brief to the summary channel'
+                )
+                .addStringOption((o) =>
+                    o
+                        .setName('video')
+                        .setDescription('YouTube URL or 11-character video ID')
+                        .setRequired(true)
+                        .setMaxLength(200)
+                )
         ),
 
     /**
@@ -237,9 +276,13 @@ module.exports = {
                     interaction.client,
                     guildId
                 );
+                const briefDest = await resolveSummaryChannel(interaction.guild);
                 const destLine = dest
-                    ? `Posts go to ${dest}.`
-                    : `No destination yet — create **${feedChannelHint()}** or run \`/ytfeed channel\`.`;
+                    ? `New videos go to ${dest}.`
+                    : `No video channel yet — create **${feedChannelHint()}** or run \`/ytfeed channel\`.`;
+                const briefLine = briefDest
+                    ? `Daily briefs go to ${briefDest}.`
+                    : `No brief channel yet — create **${briefChannelHint()}** or run \`/ytfeed briefchannel\`.`;
 
                 if (rows.length === 0) {
                     await interaction.reply({
@@ -254,7 +297,7 @@ module.exports = {
                     return `• **${title}** — \`${row.yt_channel_id}\``;
                 });
                 await interaction.reply({
-                    content: `${destLine}\nPolling about every ${pollMinutes()} minutes.\n\n${lines.join('\n')}`.slice(
+                    content: `${destLine}\n${briefLine}\nPolling about every ${pollMinutes()} minutes.\n\n${lines.join('\n')}`.slice(
                         0,
                         1900
                     ),
@@ -375,6 +418,59 @@ module.exports = {
                 }
                 await interaction.editReply(
                     `Posted the transcript in ${dest} (${status}).`
+                );
+                return;
+            }
+
+            if (sub === 'briefchannel') {
+                requireManageGuild(interaction);
+                const dest =
+                    interaction.options.getChannel('destination') ||
+                    interaction.channel;
+                if (!dest || !dest.isTextBased()) {
+                    await interaction.reply({
+                        content: 'Pick a text channel for daily briefs.',
+                        flags: MessageFlags.Ephemeral,
+                    });
+                    return;
+                }
+
+                setSummaryChannel(guildId, dest.id);
+                await interaction.reply({
+                    content: `Daily transcript briefs will be posted in ${dest}.`,
+                    flags: MessageFlags.Ephemeral,
+                });
+                return;
+            }
+
+            if (sub === 'brief') {
+                requireManageGuild(interaction);
+                await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+                const briefDest = await resolveSummaryChannel(interaction.guild);
+                if (!briefDest) {
+                    await interaction.editReply(
+                        `No brief channel found. Create **${briefChannelHint()}** or run \`/ytfeed briefchannel\`.`
+                    );
+                    return;
+                }
+
+                const feedDest =
+                    (await resolveDiscordChannel(
+                        interaction.client,
+                        guildId
+                    )) || interaction.channel;
+                if (!feedDest || !feedDest.isTextBased()) {
+                    await interaction.editReply(
+                        'Need a text channel for the transcript first (`/ytfeed channel`).'
+                    );
+                    return;
+                }
+
+                const video = interaction.options.getString('video', true);
+                const status = await postTranscriptToChannel(feedDest, video);
+                await interaction.editReply(
+                    `Transcript ${status} in ${feedDest}. Daily brief sent to ${briefDest}.`
                 );
             }
         } catch (err) {
