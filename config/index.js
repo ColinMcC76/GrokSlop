@@ -9,10 +9,7 @@ module.exports = {
     ttsVoice: process.env.OPENAI_TTS_VOICE || 'cedar',
     /** /talkon voice. gpt-realtime-2.1 is the reasoning speech-to-speech model. */
     realtimeModel: process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-2.1',
-    realtimeVoice:
-        process.env.OPENAI_REALTIME_VOICE ||
-        process.env.OPENAI_TTS_VOICE ||
-        'cedar',
+    realtimeVoice: process.env.OPENAI_REALTIME_VOICE || 'cedar',
     realtimeReasoningEffort:
         process.env.OPENAI_REALTIME_REASONING_EFFORT ||
         process.env.OPENAI_REASONING_EFFORT ||
