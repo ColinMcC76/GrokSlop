@@ -56,6 +56,20 @@ Voice chat (multiple speakers):
 - If interrupted, keep your next reply short.
 `.trim();
 
+const voiceSilenceAddon = `
+## Handling Silence and Background Noise
+
+If the latest audio is silence, background noise, hold music, TV audio, side conversation, or speech not addressed to you, call \`wait_for_user\`.
+
+Do not respond conversationally after calling this tool.
+
+Do not say "I'm here," "I didn't catch that," "Take your time," or "Let me know when you're ready."
+
+Resume normal responses only when the user clearly addresses you or asks for help.
+
+Use this for non-addressed audio, not for unclear user requests. If the user is clearly speaking to the assistant but the content is unintelligible, ask for clarification instead.
+`.trim();
+
 const ttsInstructions =
     'Speak clearly and confidently with a calm, intelligent tone. Use subtle dry wit only when appropriate. Avoid theatrical or repetitive delivery.';
 
@@ -63,11 +77,11 @@ const equipmentCheckTtsInstructions =
     'Deliver this as a clear, upbeat equipment check call-out in voice chat — like sounding off to a group. Keep it natural and engaging, not robotic or overly dramatic.';
 
 function realtimeSolo() {
-    return `${textChat}\n\n${voiceSoloAddon}`;
+    return `${textChat}\n\n${voiceSoloAddon}\n\n${voiceSilenceAddon}`;
 }
 
 function realtimeGroup() {
-    return `${textChat}\n\n${voiceGroupAddon}`;
+    return `${textChat}\n\n${voiceGroupAddon}\n\n${voiceSilenceAddon}`;
 }
 
 const CUSTOM_PERSONA_HEADING = '\n\n--- Custom server persona ---\n';
@@ -101,6 +115,7 @@ module.exports = {
     textChat,
     voiceSoloAddon,
     voiceGroupAddon,
+    voiceSilenceAddon,
     ttsInstructions,
     equipmentCheckTtsInstructions,
     realtimeSolo,
