@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const OpenAI = require('openai');
 const config = require('../config');
 const { ttsInstructions } = require('../ai/persona');
+const { toSpeechVoice } = require('../utils/openaiVoice');
 
 const client = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -19,7 +20,7 @@ async function generateSpeech(text, options = {}) {
 
     const speech = await client.audio.speech.create({
         model: config.ttsModel,
-        voice: config.ttsVoice,
+        voice: toSpeechVoice(config.ttsVoice),
         input: prepareTextForSpeech(text).slice(0, 4000),
         instructions: options.instructions ?? ttsInstructions,
         response_format: 'wav',

@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const EventEmitter = require('node:events');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
+const { toRealtimeVoice } = require('../utils/openaiVoice');
 
 class RealtimeSession extends EventEmitter {
     constructor({
@@ -13,7 +14,7 @@ class RealtimeSession extends EventEmitter {
         super();
         this.apiKey = apiKey;
         this.instructions = instructions;
-        this.voice = voice;
+        this.voice = toRealtimeVoice(voice);
         this.model = model;
         this.reasoningEffort = reasoningEffort;
         this.ws = null;
