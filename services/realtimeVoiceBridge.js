@@ -9,6 +9,7 @@ const { Transform } = require('node:stream');
 const { RealtimeSession } = require('./realtimeSession');
 const { ensurePlaying } = require('./youtubeQueue');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
+const { responseUsedWaitTool } = require('./realtimeTools');
 const persona = require('../ai/persona');
 const { getActivePromptText } = require('../ai/guildPersonas');
 const config = require('../config');
@@ -19,8 +20,12 @@ const PREFIX_USER = '\u{1F5E3}\uFE0F **You said:** ';
 
 /** Min RMS (int16 mono) on first ~100ms of audio before we cancel assistant playback (VAD false positives / quiet noise). */
 const INTERRUPT_CONFIRM_RMS = Number(process.env.RT_INTERRUPT_MIN_RMS) || 450;
+/** Skip committing a finished segment that is this quiet (silence / room tone). */
+const COMMIT_MIN_RMS = Number(process.env.RT_COMMIT_MIN_RMS) || 380;
 /** 24kHz mono s16le bytes — ~100ms — used to measure speech energy before interrupting playback. */
 const INTERRUPT_CONFIRM_BYTES = 4800;
+/** Wait this long for STT before assuming the segment was silence. */
+const TRANSCRIPT_WAIT_MS = Number(process.env.RT_TRANSCRIPT_WAIT_MS) || 2500;
 
 function pcmMonoInt16Rms(buf) {
     if (!buf || buf.length < 2) return 0;
@@ -227,10 +232,58 @@ async function startRealtimeForGuild({
     }
 
     let responseInProgress = false;
+    let waitedOutLastResponse = false;
     /** @type {Map<string, boolean>} */
     const captureByUser = new Map();
     let outputPcmBytesThisResponse = 0;
     let loggedFirstPcmThisResponse = false;
+    /** @type {{ resolved: boolean, timer: ReturnType<typeof setTimeout> }[]} */
+    const pendingTurns = [];
+
+    function clearPendingTurns() {
+        for (const turn of pendingTurns) {
+            turn.resolved = true;
+            clearTimeout(turn.timer);
+        }
+        pendingTurns.length = 0;
+    }
+
+    function queuePendingTurn(sourceUserId) {
+        const turn = { resolved: false, timer: null, sourceUserId };
+        turn.timer = setTimeout(() => {
+            if (turn.resolved || tearingDown) {
+                return;
+            }
+            turn.resolved = true;
+            console.log('[RT] skipping response; no transcript (silence/noise)');
+        }, TRANSCRIPT_WAIT_MS);
+        pendingTurns.push(turn);
+    }
+
+    function resolveNextPendingTurn(shouldRespond, reason) {
+        while (pendingTurns[0]?.resolved) {
+            pendingTurns.shift();
+        }
+        const turn = pendingTurns.shift();
+        if (!turn) {
+            return;
+        }
+        if (turn.resolved) {
+            return;
+        }
+        turn.resolved = true;
+        clearTimeout(turn.timer);
+        if (shouldRespond && !responseInProgress && !tearingDown) {
+            if (isGroupListen && turn.sourceUserId) {
+                transcriptSourceQueue.push(turn.sourceUserId);
+            }
+            rt.createResponse();
+            return;
+        }
+        if (!shouldRespond && reason) {
+            console.log('[RT]', reason);
+        }
+    }
 
     rt.on('audioDelta', (delta) => {
         if (tearingDown) return;
@@ -250,7 +303,33 @@ async function startRealtimeForGuild({
         console.log('[RT] output audio chunk done');
     });
 
+    rt.on('waitForUser', () => {
+        if (tearingDown) return;
+        waitedOutLastResponse = true;
+        flushLocalPlaybackOnly();
+        responseInProgress = false;
+        console.log('[RT] background/silence wait — no spoken reply');
+    });
+
+    rt.on('inputTranscript', (text) => {
+        if (tearingDown) return;
+        const trimmed = text?.trim() ?? '';
+        if (isSubstantiveTranscript(trimmed)) {
+            resolveNextPendingTurn(true);
+            return;
+        }
+        resolveNextPendingTurn(
+            false,
+            trimmed
+                ? `skipping response; non-substantive transcript: ${trimmed.slice(0, 80)}`
+                : 'skipping response; empty transcript'
+        );
+    });
+
     rt.on('assistantTranscript', async (text) => {
+        if (waitedOutLastResponse) {
+            return;
+        }
         const trimmed = text?.trim() ?? '';
         if (!isSubstantiveTranscript(trimmed)) {
             if (trimmed) {
@@ -296,6 +375,7 @@ async function startRealtimeForGuild({
     rt.on('responseCreated', () => {
         if (tearingDown) return;
         responseInProgress = true;
+        waitedOutLastResponse = false;
         outputPcmBytesThisResponse = 0;
         loggedFirstPcmThisResponse = false;
         pcmWriteChain.current = Promise.resolve();
@@ -312,8 +392,9 @@ async function startRealtimeForGuild({
     rt.on('responseDone', (event) => {
         responseInProgress = false;
         const status = event?.response?.status;
-        console.log('[RT] response done', status ? `(status: ${status})` : '');
-        if (outputPcmBytesThisResponse === 0 && status === 'completed') {
+        const waited = waitedOutLastResponse || responseUsedWaitTool(event);
+        console.log('[RT] response done', status ? `(status: ${status})` : '', waited ? '(wait_for_user)' : '');
+        if (outputPcmBytesThisResponse === 0 && status === 'completed' && !waited) {
             console.warn(
                 '[RT] completed response had 0 bytes of streamed audio. ' +
                     'Set RT_DEBUG=1 and check session.updated output_modalities / response.created. ' +
@@ -398,8 +479,25 @@ async function startRealtimeForGuild({
         });
 
         let appendedBytes = 0;
+        let energySumSq = 0;
+        let energySamples = 0;
         let interruptConfirmed = !mustConfirmSpeech;
         let preInterruptBuffer = Buffer.alloc(0);
+
+        function accumulateEnergy(buf) {
+            if (!buf || buf.length < 2) return;
+            const n = buf.length / 2;
+            const v = new Int16Array(buf.buffer, buf.byteOffset, n);
+            for (let i = 0; i < n; i++) {
+                const s = v[i];
+                energySumSq += s * s;
+            }
+            energySamples += n;
+        }
+
+        function segmentRms() {
+            return energySamples ? Math.sqrt(energySumSq / energySamples) : 0;
+        }
 
         function abortQuietSegment(reason) {
             captureByUser.delete(speakingUserId);
@@ -441,12 +539,14 @@ async function startRealtimeForGuild({
                 responseInProgress = false;
 
                 appendedBytes = preInterruptBuffer.length;
+                accumulateEnergy(preInterruptBuffer);
                 rt.appendAudio(preInterruptBuffer.toString('base64'));
                 preInterruptBuffer = Buffer.alloc(0);
                 return;
             }
 
             appendedBytes += pcm24kMono.length;
+            accumulateEnergy(pcm24kMono);
             rt.appendAudio(pcm24kMono.toString('base64'));
         });
 
@@ -469,6 +569,7 @@ async function startRealtimeForGuild({
                     flushLocalPlaybackOnly();
                     responseInProgress = false;
                     appendedBytes = preInterruptBuffer.length;
+                    accumulateEnergy(preInterruptBuffer);
                     rt.appendAudio(preInterruptBuffer.toString('base64'));
                 } else {
                     return;
@@ -476,6 +577,7 @@ async function startRealtimeForGuild({
             }
 
             const minBytesFor100ms = 4800;
+            const rms = segmentRms();
 
             if (appendedBytes < minBytesFor100ms) {
                 console.log('[RT] skipping tiny audio segment:', appendedBytes);
@@ -483,13 +585,18 @@ async function startRealtimeForGuild({
                 return;
             }
 
-            console.log('[RT] committed audio segment, total bytes:', appendedBytes);
-            if (isGroupListen) {
-                transcriptSourceQueue.push(speakingUserId);
+            if (rms < COMMIT_MIN_RMS) {
+                console.log(
+                    `[RT] skipping quiet audio segment (rms=${rms.toFixed(0)} < ${COMMIT_MIN_RMS})`
+                );
+                rt.clearInputBuffer();
+                return;
             }
+
+            console.log('[RT] committed audio segment, total bytes:', appendedBytes, 'rms:', rms.toFixed(0));
             rt.commitAudio();
             if (!responseInProgress && !tearingDown) {
-                rt.createResponse();
+                queuePendingTurn(speakingUserId);
             }
         });
 
@@ -522,6 +629,7 @@ async function startRealtimeForGuild({
         receiver,
         setTearingDown() {
             tearingDown = true;
+            clearPendingTurns();
         },
     });
 }

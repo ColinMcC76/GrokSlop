@@ -2,6 +2,12 @@ const WebSocket = require('ws');
 const EventEmitter = require('node:events');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
 const { toRealtimeVoice } = require('../utils/openaiVoice');
+const {
+    REALTIME_TOOLS,
+    WAIT_FOR_USER_TOOL,
+    collectFunctionCalls,
+    responseUsedWaitTool,
+} = require('./realtimeTools');
 
 class RealtimeSession extends EventEmitter {
     constructor({
@@ -20,6 +26,8 @@ class RealtimeSession extends EventEmitter {
         this.ws = null;
         this._assistantTranscript = '';
         this._assistantTranscriptEmitted = false;
+        this._handledCallIds = new Set();
+        this._emittedWaitThisResponse = false;
     }
 
     async connect() {
@@ -101,6 +109,7 @@ class RealtimeSession extends EventEmitter {
             if (event.type === 'response.created') {
                 this._assistantTranscript = '';
                 this._assistantTranscriptEmitted = false;
+                this._emittedWaitThisResponse = false;
                 if (debug) {
                     console.log(
                         '[RT] response.created modalities:',
@@ -112,7 +121,7 @@ class RealtimeSession extends EventEmitter {
 
             if (event.type === 'response.done') {
                 const mods = event.response?.output_modalities;
-                if (mods && !mods.includes('audio')) {
+                if (mods && !mods.includes('audio') && !responseUsedWaitTool(event)) {
                     console.warn(
                         '[RT] response completed without audio modality; got:',
                         mods,
@@ -137,10 +146,13 @@ class RealtimeSession extends EventEmitter {
 
             if (event.type === 'conversation.item.input_audio_transcription.completed') {
                 const t = event.transcript?.trim() ?? '';
+                this.emit('inputTranscript', t);
                 if (isSubstantiveTranscript(t)) {
                     this.emit('transcript', t);
                 }
             }
+
+            this._maybeHandleToolCalls(event);
 
             if (event.type === 'error') {
                 console.error('[RT API ERROR]', event);
@@ -154,6 +166,8 @@ class RealtimeSession extends EventEmitter {
             model: this.model,
             instructions: this.instructions,
             output_modalities: ['audio'],
+            tools: REALTIME_TOOLS,
+            tool_choice: 'auto',
             audio: {
                 input: {
                     format: { type: 'audio/pcm', rate: 24000 },
@@ -199,6 +213,8 @@ class RealtimeSession extends EventEmitter {
             response: {
                 output_modalities: ['audio'],
                 max_output_tokens: 4096,
+                tools: REALTIME_TOOLS,
+                tool_choice: 'auto',
                 audio: {
                     output: {
                         format: { type: 'audio/pcm', rate: 24000 },
@@ -223,6 +239,60 @@ class RealtimeSession extends EventEmitter {
             type: 'session.update',
             session: {
                 instructions: this.instructions,
+                tools: REALTIME_TOOLS,
+                tool_choice: 'auto',
+            },
+        });
+    }
+
+    _maybeHandleToolCalls(event) {
+        const calls = collectFunctionCalls(event);
+        for (const call of calls) {
+            this._handleFunctionCall(call);
+        }
+
+        if (
+            event.type === 'response.done' &&
+            responseUsedWaitTool(event) &&
+            !this._emittedWaitThisResponse
+        ) {
+            this._emittedWaitThisResponse = true;
+            this.emit('waitForUser', { source: 'response.done' });
+        }
+    }
+
+    _handleFunctionCall({ name, call_id, arguments: rawArgs }) {
+        if (!call_id || this._handledCallIds.has(call_id)) {
+            return;
+        }
+        this._handledCallIds.add(call_id);
+        if (this._handledCallIds.size > 40) {
+            const oldest = this._handledCallIds.values().next().value;
+            this._handledCallIds.delete(oldest);
+        }
+
+        if (name === WAIT_FOR_USER_TOOL.name) {
+            console.log('[RT] wait_for_user — staying quiet');
+            this.send({
+                type: 'conversation.item.create',
+                item: {
+                    type: 'function_call_output',
+                    call_id,
+                    output: JSON.stringify({ status: 'waiting' }),
+                },
+            });
+            this._emittedWaitThisResponse = true;
+            this.emit('waitForUser', { call_id, arguments: rawArgs });
+            return;
+        }
+
+        console.warn('[RT] unknown tool call:', name);
+        this.send({
+            type: 'conversation.item.create',
+            item: {
+                type: 'function_call_output',
+                call_id,
+                output: JSON.stringify({ error: `unknown tool: ${name}` }),
             },
         });
     }
