@@ -4,12 +4,18 @@ const { listLinkedGuildIds, isConfigured } = require('../services/spotifyAuth');
 const { ensureConnectDevice } = require('../services/spotifyConnect');
 const { hasLibrespotCredentials } = require('../services/spotifyLibrespotOAuth');
 const { startYoutubeFeed } = require('../services/youtubeFeed');
+const config = require('../config');
 
 module.exports = {
     name: Events.ClientReady,
     once: true,
     execute(client) {
         console.log(`Grokslop is online as ${client.user.tag}`);
+        console.log(
+            `[ai] chat=${config.model} reasoning=${config.reasoningEffort || 'off'} ` +
+                `tts=${config.ttsModel} realtime=${config.realtimeModel} ` +
+                `realtimeReasoning=${config.realtimeReasoningEffort || 'off'}`
+        );
 
         try {
             require('pdf-parse');
