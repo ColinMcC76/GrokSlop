@@ -11,6 +11,7 @@ const { ensurePlaying } = require('./youtubeQueue');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
 const persona = require('../ai/persona');
 const { getActivePromptText } = require('../ai/guildPersonas');
+const config = require('../config');
 
 const DISCORD_MSG_MAX = 1900;
 const PREFIX_ASSISTANT = '\u{1F916} **Shabbot:** ';
@@ -188,8 +189,9 @@ async function startRealtimeForGuild({
 
     const rt = new RealtimeSession({
         apiKey: process.env.OPENAI_API_KEY,
-        model: process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime',
-        voice: process.env.OPENAI_REALTIME_VOICE || 'cedar',
+        model: config.realtimeModel,
+        voice: config.realtimeVoice,
+        reasoningEffort: config.realtimeReasoningEffort,
         instructions,
     });
 

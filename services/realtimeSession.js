@@ -3,12 +3,19 @@ const EventEmitter = require('node:events');
 const { isSubstantiveTranscript } = require('../utils/transcriptFilter');
 
 class RealtimeSession extends EventEmitter {
-    constructor({ apiKey, instructions, voice = 'cedar', model = 'gpt-realtime' }) {
+    constructor({
+        apiKey,
+        instructions,
+        voice = 'cedar',
+        model = 'gpt-realtime-2.1',
+        reasoningEffort = 'medium',
+    }) {
         super();
         this.apiKey = apiKey;
         this.instructions = instructions;
         this.voice = voice;
         this.model = model;
+        this.reasoningEffort = reasoningEffort;
         this.ws = null;
         this._assistantTranscript = '';
         this._assistantTranscriptEmitted = false;
@@ -141,26 +148,35 @@ class RealtimeSession extends EventEmitter {
         });
 
         // Shape matches OpenAI Realtime TypeScript types (RealtimeSessionCreateRequest).
-        this.send({
-            type: 'session.update',
-            session: {
-                type: 'realtime',
-                instructions: this.instructions,
-                output_modalities: ['audio'],
-                audio: {
-                    input: {
-                        format: { type: 'audio/pcm', rate: 24000 },
-                        turn_detection: null,
-                        transcription: {
-                            model: 'gpt-4o-mini-transcribe'
-                        }
-                    },
-                    output: {
-                        format: { type: 'audio/pcm', rate: 24000 },
-                        voice: this.voice
+        const session = {
+            type: 'realtime',
+            model: this.model,
+            instructions: this.instructions,
+            output_modalities: ['audio'],
+            audio: {
+                input: {
+                    format: { type: 'audio/pcm', rate: 24000 },
+                    turn_detection: null,
+                    transcription: {
+                        model: 'gpt-4o-mini-transcribe'
                     }
+                },
+                output: {
+                    format: { type: 'audio/pcm', rate: 24000 },
+                    voice: this.voice
                 }
             }
+        };
+
+        if (this.reasoningEffort) {
+            session.reasoning = {
+                effort: this.reasoningEffort
+            };
+        }
+
+        this.send({
+            type: 'session.update',
+            session
         });
     }
 

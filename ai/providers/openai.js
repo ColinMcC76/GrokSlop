@@ -33,6 +33,12 @@ async function generate({ instructions, input, attachments = [], useWebSearch = 
         ]
     };
 
+    if (config.reasoningEffort) {
+        request.reasoning = {
+            effort: config.reasoningEffort
+        };
+    }
+
     if (useWebSearch) {
         request.tools = [
             // Check your current OpenAI docs/SDK if this name changes in a future release.
