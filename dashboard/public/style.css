@@ -20,11 +20,13 @@ html,
 body {
     height: 100%;
     margin: 0;
+    overflow: hidden;
 }
 
 body {
     display: flex;
     flex-direction: column;
+    min-height: 0;
     background: var(--bg);
     color: var(--text);
     font: 14px/1.4 "Segoe UI", Candara, system-ui, sans-serif;
@@ -118,13 +120,15 @@ textarea {
 }
 
 .situation {
+    flex: 0 0 auto;
     padding: 8px 16px 0;
 }
 
 .result {
+    flex: 0 0 auto;
     margin: 8px 16px 0;
     min-height: 48px;
-    max-height: 140px;
+    max-height: 96px;
     overflow: auto;
     padding: 8px 10px;
     white-space: pre-wrap;
@@ -145,8 +149,15 @@ textarea {
     border-color: #6d5520;
 }
 
+.top,
+.result,
+.log-wrap {
+    flex-shrink: 0;
+}
+
 .board {
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -239,9 +250,12 @@ button.quiet {
 }
 
 .log-wrap {
-    flex: 0 0 168px;
     display: flex;
     flex-direction: column;
+    height: 132px;
+    max-height: 132px;
+    min-height: 0;
+    overflow: hidden;
     margin: 0;
     border-radius: 0;
     border-left: 0;
@@ -251,18 +265,39 @@ button.quiet {
     background: #101318;
 }
 
+.log-wrap.collapsed {
+    height: auto;
+    max-height: none;
+}
+
+.log-wrap.collapsed #log {
+    display: none;
+}
+
 .log-head {
-    padding: 6px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 16px;
     color: var(--muted);
     font-size: 12px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
 }
 
+#logToggle {
+    min-height: 26px;
+    padding: 2px 10px;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
 #log {
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0;
     margin: 0;
-    padding: 0 16px 10px;
+    padding: 0 16px 8px;
     overflow: auto;
     white-space: pre-wrap;
     color: #c5d0c0;

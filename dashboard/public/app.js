@@ -192,6 +192,31 @@ guildSelect.addEventListener('change', () => {
     paintSituation();
 });
 
+const logWrap = document.querySelector('.log-wrap');
+const logToggle = $('logToggle');
+
+function setLogCollapsed(collapsed) {
+    logWrap.classList.toggle('collapsed', collapsed);
+    logToggle.textContent = collapsed ? 'Show' : 'Hide';
+    try {
+        localStorage.setItem('grokslop-log-collapsed', collapsed ? '1' : '0');
+    } catch {
+        /* private mode */
+    }
+}
+
+logToggle.addEventListener('click', () => {
+    setLogCollapsed(!logWrap.classList.contains('collapsed'));
+});
+
+try {
+    if (localStorage.getItem('grokslop-log-collapsed') === '1') {
+        setLogCollapsed(true);
+    }
+} catch {
+    /* ignore */
+}
+
 function appendLog(text) {
     logEl.textContent = logEl.textContent
         ? `${logEl.textContent}\n${text}`
