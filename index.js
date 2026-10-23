@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 const { initErrorLog } = require('./utils/errorLog');
+const { startDashboard } = require('./dashboard/server');
 
 const client = new Client({
     intents: [
@@ -46,6 +47,9 @@ for (const file of eventFiles) {
     }
 }
 
+startDashboard(client);
 initErrorLog(client);
 
-client.login(process.env.TOKEN);
+client.login(process.env.TOKEN).catch((err) => {
+    console.error('[login] GrokSlop could not log in:', err?.message || err);
+});

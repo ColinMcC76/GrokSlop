@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GrokSlop</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header class="top">
+        <div class="brand">
+            <h1>GrokSlop</h1>
+            <p id="tagline">Starting…</p>
+        </div>
+        <div id="presence" class="presence offline">Offline</div>
+        <div class="selectors">
+            <label>Server
+                <select id="guild"></select>
+            </label>
+            <label>Text channel
+                <select id="textChannel"></select>
+            </label>
+            <label>Voice channel
+                <select id="voiceChannel"></select>
+            </label>
+            <label>Member
+                <select id="member"></select>
+            </label>
+        </div>
+    </header>
+
+    <p id="situation" class="situation">Waiting for Discord.</p>
+    <pre id="result" class="result" aria-live="polite">Ready.</pre>
+
+    <main class="board">
+        <section>
+            <h2>Voice</h2>
+            <div class="row">
+                <button type="button" data-action="join">Join</button>
+                <button type="button" data-action="leave" class="quiet">Leave</button>
+            </div>
+            <div class="row volume-row">
+                <label class="grow">Volume
+                    <input id="volume" type="range" min="0" max="100" step="5" value="100">
+                </label>
+                <span id="volumeLabel">100</span>
+                <button type="button" data-action="volume">Set</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>YouTube</h2>
+            <label class="stack">Link or search
+                <input id="ytQuery" type="text" maxlength="500" placeholder="URL, playlist, or search">
+            </label>
+            <div class="row">
+                <button type="button" data-action="play">Play</button>
+                <button type="button" data-action="skip">Skip</button>
+                <button type="button" data-action="stop" class="quiet">Stop</button>
+                <button type="button" data-action="nowplaying" class="quiet">Now playing</button>
+                <button type="button" data-action="queue" class="quiet">Queue</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Talk</h2>
+            <p class="hint">Talk on listens to the selected member. Talk group listens to everyone in the voice channel.</p>
+            <div class="row">
+                <button type="button" data-action="talkon">Talk on</button>
+                <button type="button" data-action="talkgroup">Talk group</button>
+                <button type="button" data-action="talkoff" class="quiet">Talk off</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Say</h2>
+            <label class="stack">Line
+                <input id="sayText" type="text" maxlength="500" placeholder="What he should say in voice">
+            </label>
+            <div class="row">
+                <button type="button" data-action="say">Say</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Equipment check</h2>
+            <label class="stack">Prompt
+                <input id="equipPrompt" type="text" maxlength="500" placeholder="Optional angle">
+            </label>
+            <div class="row">
+                <button type="button" data-action="equipmentcheck">Post check</button>
+                <button type="button" data-action="equipmentchecksoundoff">Sound off</button>
+            </div>
+            <p class="hint">Posts in the selected text channel. Sound off also speaks it in voice.</p>
+        </section>
+
+        <section>
+            <h2>YouTube feed</h2>
+            <label class="stack">Channel
+                <input id="feedChannel" type="text" maxlength="400" placeholder="URL, @handle, or UC… id">
+            </label>
+            <label class="check"><input id="feedForce" type="checkbox"> Also post the newest video if it was already recorded</label>
+            <label class="stack">Video
+                <input id="feedVideo" type="text" maxlength="200" placeholder="URL or video id for transcript / brief">
+            </label>
+            <div class="row">
+                <button type="button" data-action="ytfeed_list" class="quiet">List</button>
+                <button type="button" data-action="ytfeed_check">Check now</button>
+                <button type="button" data-action="ytfeed_add">Add</button>
+                <button type="button" data-action="ytfeed_remove" class="quiet">Remove</button>
+            </div>
+            <div class="row">
+                <button type="button" data-action="ytfeed_channel" class="quiet">Set post channel</button>
+                <button type="button" data-action="ytfeed_briefchannel" class="quiet">Set brief channel</button>
+                <button type="button" data-action="ytfeed_transcript">Transcript</button>
+                <button type="button" data-action="ytfeed_brief">Brief</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Spotify</h2>
+            <label class="stack">Redirect URL
+                <input id="spotifyRedirect" type="text" maxlength="2000" placeholder="Paste the address bar after login">
+            </label>
+            <div class="row">
+                <button type="button" data-action="spotify_status" class="quiet">Status</button>
+                <button type="button" data-action="spotify_link">Link</button>
+                <button type="button" data-action="spotify_finish">Finish</button>
+                <button type="button" data-action="spotify_unlink" class="quiet">Unlink</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Persona</h2>
+            <label class="stack">Name
+                <input id="personaName" type="text" maxlength="32" placeholder="letters, numbers, dashes">
+            </label>
+            <label class="stack">Prompt
+                <textarea id="personaPrompt" maxlength="4000" rows="3" placeholder="Instructions added for this server"></textarea>
+            </label>
+            <div class="row">
+                <button type="button" data-action="persona_list" class="quiet">List</button>
+                <button type="button" data-action="persona_show" class="quiet">Show</button>
+                <button type="button" data-action="persona_use">Use</button>
+                <button type="button" data-action="persona_reset" class="quiet">Reset</button>
+                <button type="button" data-action="persona_add">Add</button>
+                <button type="button" data-action="persona_remove" class="quiet">Remove</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Memory</h2>
+            <p class="hint">Leave member blank for server memory. Pick a member for that person’s notes.</p>
+            <div class="split">
+                <label class="stack">Key
+                    <input id="memKey" type="text" maxlength="80">
+                </label>
+                <label class="stack">Value
+                    <input id="memValue" type="text" maxlength="900">
+                </label>
+            </div>
+            <div class="row">
+                <button type="button" data-action="memory_recall" class="quiet">Recall</button>
+                <button type="button" data-action="memory_remember">Remember</button>
+                <button type="button" data-action="memory_forget" class="quiet">Forget</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Intro song</h2>
+            <label class="stack">YouTube
+                <input id="introQuery" type="text" maxlength="500" placeholder="Link or search for the selected member">
+            </label>
+            <div class="row">
+                <button type="button" data-action="intro_set">Set and play</button>
+                <button type="button" data-action="intro_play">Play saved</button>
+                <button type="button" data-action="intro_clear" class="quiet">Clear</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>Summarize</h2>
+            <label class="stack">Recent messages
+                <input id="sumLimit" type="number" min="5" max="50" value="30">
+            </label>
+            <div class="row">
+                <button type="button" data-action="summarize">Summarize channel</button>
+            </div>
+            <p class="hint">Posts the summary in the selected text channel.</p>
+        </section>
+
+        <section>
+            <h2>Ping</h2>
+            <div class="row">
+                <button type="button" data-action="ping">Ping</button>
+            </div>
+        </section>
+    </main>
+
+    <section class="log-wrap" aria-label="Log">
+        <div class="log-head">Log</div>
+        <pre id="log"></pre>
+    </section>
+
+    <script src="/app.js"></script>
+</body>
+</html>

@@ -298,12 +298,13 @@ function scheduleCountdownEdits(rec) {
 }
 
 /**
- * @param {import('discord.js').ChatInputCommandInteraction} interaction
+ * @param {import('discord.js').ChatInputCommandInteraction | null} interaction
  * @param {string | null} optionalPrompt
- * @param {{ body?: string }} [options]
+ * @param {{ body?: string, guild?: import('discord.js').Guild, channel?: import('discord.js').TextBasedChannel }} [options]
+ * Slash commands post via `interaction.editReply`. The control panel passes `options.channel` and posts with `channel.send`.
  */
 async function runEquipmentCheck(interaction, optionalPrompt, options = {}) {
-    const guild = interaction.guild;
+    const guild = options.guild || interaction?.guild;
     if (!guild) {
         throw new Error('This command only works in a server.');
     }
@@ -357,10 +358,14 @@ async function runEquipmentCheck(interaction, optionalPrompt, options = {}) {
         );
     }
 
-    const message = await interaction.editReply({
-        content,
-        allowedMentions: { roles: pingRoles.map((r) => r.id) },
-    });
+    if (!options.channel && !interaction) {
+        throw new Error('No channel to post the equipment check.');
+    }
+
+    const allowedMentions = { roles: pingRoles.map((r) => r.id) };
+    const message = options.channel
+        ? await options.channel.send({ content, allowedMentions })
+        : await interaction.editReply({ content, allowedMentions });
 
     const rec = {
         announcementPrefix,
