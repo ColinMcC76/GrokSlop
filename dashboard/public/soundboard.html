@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GrokSlop soundboard</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header class="top">
+        <div class="brand">
+            <h1>GrokSlop</h1>
+            <p id="tagline">Soundboard</p>
+            <nav class="nav">
+                <a href="/">Controls</a>
+                <a href="/soundboard" aria-current="page">Soundboard</a>
+            </nav>
+        </div>
+        <div id="presence" class="presence offline">Offline</div>
+        <div class="selectors">
+            <label>Server
+                <select id="guild"></select>
+            </label>
+            <label>Voice channel
+                <select id="voiceChannel"></select>
+            </label>
+        </div>
+    </header>
+
+    <p id="situation" class="situation">Pick a server. Play joins the selected voice channel if he is not already in one.</p>
+    <pre id="result" class="result" aria-live="polite">Ready.</pre>
+
+    <main class="sound-main">
+        <section class="composer">
+            <h2>New soundbite</h2>
+            <div class="composer-row">
+                <label>Name
+                    <input id="newName" type="text" maxlength="48" placeholder="Airhorn">
+                </label>
+                <label>Audio file
+                    <input id="newFile" type="file" accept=".mp3,.wav,.ogg,.webm,.m4a,.flac,.aac,audio/*">
+                </label>
+                <button type="button" id="create">Add</button>
+            </div>
+        </section>
+        <div id="grid" class="bite-grid"></div>
+    </main>
+
+    <script src="/soundboard.js"></script>
+</body>
+</html>

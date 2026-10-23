@@ -125,6 +125,15 @@ function migrate() {
 
         CREATE INDEX IF NOT EXISTS idx_youtube_feed_seen_posted
             ON youtube_feed_seen(posted_at);
+
+        CREATE TABLE IF NOT EXISTS soundbites (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            ext TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
     `);
 }
 
