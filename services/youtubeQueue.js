@@ -1023,6 +1023,41 @@ function enqueueIntroTrack(guildId, player, textChannel, track, meta = {}) {
 }
 
 /**
+ * Stop the current YouTube resource without dropping it from the queue,
+ * so a soundbite can use the same voice player. Resolves true when a track
+ * should be started again afterwards.
+ * @param {string} guildId
+ * @returns {Promise<boolean>}
+ */
+function suspendForExternalAudio(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        return Promise.resolve(false);
+    }
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.stop(true);
+    } catch {}
+    return state.drainChain.catch(() => {}).then(() => state.items.length > 0);
+}
+
+/**
+ * Restart the current queued track after a soundbite, if one is still queued.
+ * @param {string} guildId
+ */
+function resumeAfterExternalAudio(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        return;
+    }
+    if (state.player.state.status !== AudioPlayerStatus.Idle) {
+        return;
+    }
+    chainDrain(state, () => playCurrentTrack(state));
+}
+
+/**
  * Start playback if queue has items but player is idle (e.g. after /talkoff).
  */
 function ensurePlaying(guildId) {
@@ -1148,6 +1183,8 @@ module.exports = {
     queueLength,
     getQueueSnapshot,
     ensurePlaying,
+    suspendForExternalAudio,
+    resumeAfterExternalAudio,
     isPlayDlInstalled,
     setYoutubeVolume,
     getYoutubeVolume,
