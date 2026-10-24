@@ -50,36 +50,66 @@ textarea {
     border-bottom: 1px solid var(--panel-edge);
 }
 
-.brand h1 {
-    margin: 0;
-    font-size: 18px;
+.tabs {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    min-height: 44px;
+    padding: 0 12px;
+    background: #101318;
+    border-bottom: 1px solid var(--panel-edge);
+}
+
+.tabs-mark {
+    align-self: center;
+    margin-right: 8px;
+    font-size: 15px;
+    font-weight: 700;
     letter-spacing: 0.02em;
 }
 
-.brand p,
+.tabs a {
+    display: flex;
+    align-items: center;
+    min-height: 36px;
+    margin-bottom: -1px;
+    padding: 0 18px;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 650;
+    text-decoration: none;
+}
+
+.tabs a:hover {
+    color: var(--text);
+    background: #1a1e25;
+}
+
+.tabs a:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: -2px;
+}
+
+.tabs a[aria-current="page"] {
+    background: #191d24;
+    color: var(--text);
+    border-color: var(--panel-edge);
+    box-shadow: inset 0 3px 0 var(--amber);
+}
+
+.tagline,
 .hint,
 .situation {
     margin: 0;
     color: var(--muted);
 }
 
-.nav {
-    display: flex;
-    gap: 10px;
-    margin-top: 6px;
-}
-
-.nav a {
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-decoration: none;
-    text-transform: uppercase;
-}
-
-.nav a[aria-current="page"] {
-    color: var(--amber);
+.tagline {
+    align-self: center;
 }
 
 .sound-main {
@@ -225,6 +255,7 @@ textarea {
     border-color: #6d5520;
 }
 
+.tabs,
 .top,
 .result,
 .log-wrap {
