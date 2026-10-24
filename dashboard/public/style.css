@@ -132,6 +132,10 @@ textarea {
     align-items: end;
 }
 
+.composer input:disabled {
+    opacity: 0.45;
+}
+
 .bite-grid {
     flex: 1 1 auto;
     min-height: 0;
