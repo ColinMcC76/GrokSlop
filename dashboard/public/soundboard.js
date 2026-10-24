@@ -24,57 +24,47 @@ function formatBytes(bytes) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function fillSelect(select, items, placeholder, labelFor) {
-    const current = select.value;
-    select.replaceChildren();
-    const blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = placeholder;
-    select.appendChild(blank);
-    for (const item of items) {
-        const option = document.createElement('option');
-        option.value = item.id;
-        option.textContent = labelFor(item);
-        select.appendChild(option);
-    }
-    if ([...select.options].some((option) => option.value === current)) {
-        select.value = current;
-    }
-}
-
 function selectedGuild() {
     if (!latest) return null;
     return latest.guilds.find((guild) => guild.id === guildSelect.value) || null;
 }
 
 function paintStatus() {
+    const saved = readSelection();
+    const guilds = latest?.guilds || [];
+    fillSelect(
+        guildSelect,
+        guilds,
+        guilds.length ? 'Select server' : 'No servers',
+        (guild) => guild.name,
+        saved.guildId
+    );
+    if (!guildSelect.value && guilds.length === 1) {
+        guildSelect.value = guilds[0].id;
+    }
+    const guild = selectedGuild();
+    const sameGuild = Boolean(guild && saved.guildId === guild.id);
+    fillSelect(
+        voiceSelect,
+        guild?.voiceChannels || [],
+        'Voice channel',
+        (channel) => channel.name,
+        sameGuild ? saved.voiceChannelId : ''
+    );
     if (!latest?.ready) {
         presenceEl.textContent = 'Offline';
         presenceEl.className = 'presence offline';
         taglineEl.textContent = latest?.botName ? `${latest.botName} · soundboard` : 'Soundboard';
         situationEl.textContent = 'Not online yet. You can still add and edit soundbites.';
-    } else {
-        presenceEl.textContent = 'Online';
-        presenceEl.className = 'presence online';
-        const ping = typeof latest.ping === 'number' && latest.ping >= 0 ? `${latest.ping}ms` : 'ping —';
-        taglineEl.textContent = `${latest.tag || latest.botName} · ${ping}`;
-        const guild = selectedGuild();
-        situationEl.textContent = guild?.voice
-            ? `In ${guild.voice.channelName}. Play sends the clip there, unless you pick a different voice channel.`
-            : 'Not in voice. Pick a voice channel and Play will join it.';
+        return;
     }
-    const guilds = latest?.guilds || [];
-    fillSelect(guildSelect, guilds, guilds.length ? 'Select server' : 'No servers', (guild) => guild.name);
-    if (!guildSelect.value && guilds.length === 1) {
-        guildSelect.value = guilds[0].id;
-    }
-    const guild = selectedGuild();
-    fillSelect(
-        voiceSelect,
-        guild?.voiceChannels || [],
-        'Voice channel',
-        (channel) => channel.name
-    );
+    presenceEl.textContent = 'Online';
+    presenceEl.className = 'presence online';
+    const ping = typeof latest.ping === 'number' && latest.ping >= 0 ? `${latest.ping}ms` : 'ping —';
+    taglineEl.textContent = `${latest.tag || latest.botName} · ${ping}`;
+    situationEl.textContent = guild?.voice
+        ? `In ${guild.voice.channelName}. Play sends the clip there, unless you pick a different voice channel.`
+        : 'Not in voice. Pick a voice channel and Play will join it.';
 }
 
 async function refreshStatus() {
@@ -269,31 +259,88 @@ async function playBite(bite, button) {
     }
 }
 
+function nameFromFile(file) {
+    return String(file.name || '')
+        .replace(/\.[^.]+$/, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 48);
+}
+
+function syncFileHint() {
+    const files = [...$('newFile').files];
+    const nameInput = $('newName');
+    const hint = $('fileHint');
+    if (files.length > 1) {
+        nameInput.disabled = true;
+        const names = files.map((file) => nameFromFile(file) || file.name);
+        const preview = names.slice(0, 4).join(', ');
+        const extra = names.length > 4 ? `, and ${names.length - 4} more` : '';
+        hint.textContent = `${files.length} files: ${preview}${extra}.`;
+        return;
+    }
+    nameInput.disabled = false;
+    hint.textContent = files.length === 1
+        ? 'This file uses the name above.'
+        : 'One file uses the name above. Several files are named from each file.';
+}
+
+async function addSoundbite(name, file) {
+    const response = await fetch('/api/soundbites', {
+        method: 'POST',
+        headers: uploadHeaders(name, file),
+        body: file,
+    });
+    if (!response.ok) {
+        throw new Error(await readError(response));
+    }
+    const data = await response.json();
+    return data.soundbite.name;
+}
+
+$('newFile').addEventListener('change', syncFileHint);
+
 $('create').addEventListener('click', async () => {
-    const name = $('newName').value;
-    const file = $('newFile').files[0];
-    if (!name.trim() || !file) {
+    const files = [...$('newFile').files];
+    const multiple = files.length > 1;
+    const typed = $('newName').value;
+    if (files.length === 0 || (!multiple && !typed.trim())) {
         setResult('Enter a name and choose an audio file.', 'err');
         return;
     }
     $('create').disabled = true;
-    setResult('Adding…', 'pending');
+    setResult(multiple ? `Adding ${files.length} soundbites…` : 'Adding…', 'pending');
+    const added = [];
+    const failed = [];
     try {
-        const response = await fetch('/api/soundbites', {
-            method: 'POST',
-            headers: uploadHeaders(name, file),
-            body: file,
-        });
-        if (!response.ok) {
-            throw new Error(await readError(response));
+        for (const file of files) {
+            const name = multiple ? nameFromFile(file) : typed;
+            if (!name) {
+                failed.push(`${file.name || 'file'}: that file needs a name`);
+                continue;
+            }
+            try {
+                added.push(await addSoundbite(name, file));
+            } catch (err) {
+                failed.push(`${file.name || 'file'}: ${err.message || err}`);
+            }
         }
-        $('newName').value = '';
-        $('newFile').value = '';
-        const data = await response.json();
-        setResult(`Added “${data.soundbite.name}”.`, 'ok');
-        await loadBites();
-    } catch (err) {
-        setResult(err.message || String(err), 'err');
+        if (added.length) {
+            $('newName').value = '';
+            $('newFile').value = '';
+            syncFileHint();
+            await loadBites();
+        }
+        const addedText = added.length === 1
+            ? `Added “${added[0]}”.`
+            : added.length
+                ? `Added ${added.length} soundbites: ${added.map((name) => `“${name}”`).join(', ')}.`
+                : '';
+        const failedText = failed.length ? `Failed ${failed.join('; ')}.` : '';
+        setResult(
+            [addedText, failedText].filter(Boolean).join(' ') || 'Nothing was added.',
+            added.length ? 'ok' : 'err'
+        );
     } finally {
         $('create').disabled = false;
     }
@@ -301,7 +348,21 @@ $('create').addEventListener('click', async () => {
 
 guildSelect.addEventListener('change', () => {
     voiceSelect.value = '';
+    writeSelection({
+        guildId: guildSelect.value,
+        textChannelId: '',
+        voiceChannelId: '',
+        memberId: '',
+    });
     paintStatus();
+});
+
+voiceSelect.addEventListener('change', () => {
+    const patch = { voiceChannelId: voiceSelect.value };
+    if (guildSelect.value) {
+        patch.guildId = guildSelect.value;
+    }
+    writeSelection(patch);
 });
 
 refreshStatus();

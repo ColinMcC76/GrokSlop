@@ -32,24 +32,6 @@ function setResult(text, kind) {
     resultEl.className = `result ${kind || ''}`.trim();
 }
 
-function fillSelect(select, items, placeholder, labelFor) {
-    const current = select.value;
-    select.replaceChildren();
-    const blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = placeholder;
-    select.appendChild(blank);
-    for (const item of items) {
-        const option = document.createElement('option');
-        option.value = item.id;
-        option.textContent = labelFor(item);
-        select.appendChild(option);
-    }
-    if ([...select.options].some((option) => option.value === current)) {
-        select.value = current;
-    }
-}
-
 function selectedGuild() {
     if (!latest) {
         return null;
@@ -57,31 +39,49 @@ function selectedGuild() {
     return latest.guilds.find((guild) => guild.id === guildSelect.value) || null;
 }
 
+function memberLabel(member) {
+    if (member.voiceChannelName) {
+        return `${member.name} · ${member.voiceChannelName}`;
+    }
+    return member.name;
+}
+
 function paintSelectors() {
+    const saved = readSelection();
     const guilds = latest?.guilds || [];
-    fillSelect(guildSelect, guilds, guilds.length ? 'Select server' : 'No servers', (guild) => guild.name);
+    fillSelect(
+        guildSelect,
+        guilds,
+        guilds.length ? 'Select server' : 'No servers',
+        (guild) => guild.name,
+        saved.guildId
+    );
     if (!guildSelect.value && guilds.length === 1) {
         guildSelect.value = guilds[0].id;
     }
     const guild = selectedGuild();
+    const sameGuild = Boolean(guild && saved.guildId === guild.id);
     fillSelect(
         textSelect,
         guild?.textChannels || [],
         'Text channel',
-        (channel) => `#${channel.name}`
+        (channel) => `#${channel.name}`,
+        sameGuild ? saved.textChannelId : ''
     );
     fillSelect(
         voiceSelect,
         guild?.voiceChannels || [],
         'Voice channel',
-        (channel) => channel.name
+        (channel) => channel.name,
+        sameGuild ? saved.voiceChannelId : ''
     );
-    fillSelect(memberSelect, guild?.members || [], 'Server memory / no member', (member) => {
-        if (member.voiceChannelName) {
-            return `${member.name} · ${member.voiceChannelName}`;
-        }
-        return member.name;
-    });
+    fillSelect(
+        memberSelect,
+        guild?.members || [],
+        'Server memory / no member',
+        memberLabel,
+        sameGuild ? saved.memberId : ''
+    );
     if (guild && !volumeEditing) {
         volumeInput.value = String(guild.volume ?? 100);
         volumeLabel.textContent = volumeInput.value;
@@ -184,13 +184,32 @@ document.querySelectorAll('button[data-action]').forEach((button) => {
     button.addEventListener('click', () => run(button.dataset.action, button));
 });
 
+function persistSelectors() {
+    writeSelection({
+        guildId: guildSelect.value,
+        textChannelId: textSelect.value,
+        voiceChannelId: voiceSelect.value,
+        memberId: memberSelect.value,
+    });
+}
+
 guildSelect.addEventListener('change', () => {
     textSelect.value = '';
     voiceSelect.value = '';
     memberSelect.value = '';
+    writeSelection({
+        guildId: guildSelect.value,
+        textChannelId: '',
+        voiceChannelId: '',
+        memberId: '',
+    });
     paintSelectors();
     paintSituation();
 });
+
+textSelect.addEventListener('change', persistSelectors);
+voiceSelect.addEventListener('change', persistSelectors);
+memberSelect.addEventListener('change', persistSelectors);
 
 const logWrap = document.querySelector('.log-wrap');
 const logToggle = $('logToggle');

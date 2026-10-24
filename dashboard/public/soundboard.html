@@ -35,15 +35,17 @@
                 <label>Name
                     <input id="newName" type="text" maxlength="48" placeholder="Airhorn">
                 </label>
-                <label>Audio file
-                    <input id="newFile" type="file" accept=".mp3,.wav,.ogg,.webm,.m4a,.flac,.aac,audio/*">
+                <label>Audio files
+                    <input id="newFile" type="file" multiple accept=".mp3,.wav,.ogg,.webm,.m4a,.flac,.aac,audio/*">
                 </label>
                 <button type="button" id="create">Add</button>
             </div>
+            <p id="fileHint" class="hint">One file uses the name above. Several files are named from each file.</p>
         </section>
         <div id="grid" class="bite-grid"></div>
     </main>
 
+    <script src="/selectors.js"></script>
     <script src="/soundboard.js"></script>
 </body>
 </html>
