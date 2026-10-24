@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GrokSlop</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="tabs" aria-label="GrokSlop">
+        <span class="tabs-mark">GrokSlop</span>
+        <a href="/">Controls</a>
+        <a href="/queue" aria-current="page">Queue</a>
+        <a href="/soundboard">Soundboard</a>
+    </nav>
+    <header class="top">
+        <p id="tagline" class="tagline">Queue</p>
+        <div id="presence" class="presence offline">Offline</div>
+        <div class="selectors">
+            <label>Server
+                <select id="guild"></select>
+            </label>
+            <label>Text channel
+                <select id="textChannel"></select>
+            </label>
+            <label>Voice channel
+                <select id="voiceChannel"></select>
+            </label>
+        </div>
+    </header>
+
+    <p id="situation" class="situation">Pick a server. Add joins the selected voice channel if he is not already in one.</p>
+    <pre id="result" class="result" aria-live="polite">Ready.</pre>
+
+    <main class="sound-main">
+        <section class="now" aria-label="Now playing">
+            <h2>Now playing</h2>
+            <h3 id="nowTitle">Nothing queued</h3>
+            <div class="timer-row">
+                <span id="elapsed">0:00</span>
+                <span id="duration">—</span>
+            </div>
+            <input id="scrub" class="scrub" type="range" min="0" max="1000" value="0" step="1000" aria-label="Song position">
+            <div class="row transport">
+                <button type="button" id="back" class="quiet">Rewind</button>
+                <button type="button" id="toggle">Play</button>
+                <button type="button" id="forward" class="quiet">Fast forward</button>
+                <button type="button" id="skip" class="quiet">Skip</button>
+            </div>
+            <p class="hint">Rewind and fast forward jump 10 seconds. Drag the bar to move within the song.</p>
+        </section>
+
+        <section class="composer">
+            <h2>Add to queue</h2>
+            <div class="composer-row add-row">
+                <label class="grow">Link, playlist, or search
+                    <input id="query" type="text" maxlength="500" placeholder="URL, playlist, or search">
+                </label>
+                <button type="button" id="add">Add</button>
+            </div>
+        </section>
+
+        <div id="queueList" class="queue-list"></div>
+    </main>
+
+    <script src="/selectors.js"></script>
+    <script src="/queue.js"></script>
+</body>
+</html>

@@ -16,6 +16,9 @@ const PUBLIC_FILES = {
     '/soundboard': { file: 'soundboard.html', type: 'text/html; charset=utf-8' },
     '/soundboard.html': { file: 'soundboard.html', type: 'text/html; charset=utf-8' },
     '/soundboard.js': { file: 'soundboard.js', type: 'text/javascript; charset=utf-8' },
+    '/queue': { file: 'queue.html', type: 'text/html; charset=utf-8' },
+    '/queue.html': { file: 'queue.html', type: 'text/html; charset=utf-8' },
+    '/queue.js': { file: 'queue.js', type: 'text/javascript; charset=utf-8' },
 };
 
 const SOUND_ID =
@@ -431,6 +434,30 @@ function startDashboard(client) {
                 req.on('close', () => {
                     clearInterval(heartbeat);
                     logClients.delete(res);
+                });
+                return;
+            }
+
+            if (req.method === 'GET' && pathname === '/api/queue') {
+                if (!clientReady(client)) {
+                    sendJson(res, 503, {
+                        ok: false,
+                        message: 'GrokSlop is not online yet.',
+                    });
+                    return;
+                }
+                const { getQueueView } = require('../services/youtubeQueue');
+                const guildId = url.searchParams.get('guildId') || '';
+                sendJson(res, 200, {
+                    ok: true,
+                    ...(guildId ? getQueueView(guildId) : {
+                        status: 'idle',
+                        positionMs: 0,
+                        durationMs: null,
+                        current: null,
+                        upcoming: [],
+                        total: 0,
+                    }),
                 });
                 return;
             }
