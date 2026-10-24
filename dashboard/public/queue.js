@@ -8,15 +8,18 @@ const situationEl = $('situation');
 const presenceEl = $('presence');
 const taglineEl = $('tagline');
 const nowTitle = $('nowTitle');
-const elapsedEl = $('elapsed');
-const durationEl = $('duration');
+const playStateEl = $('playState');
+const clockEl = $('clock');
 const scrub = $('scrub');
 const toggleBtn = $('toggle');
+const stopBtn = $('stop');
+const volumeInput = $('volume');
 const queueList = $('queueList');
 
 let latest = null;
 let view = emptyView();
 let scrubbing = false;
+let voluming = false;
 let busy = false;
 
 function emptyView() {
@@ -27,6 +30,8 @@ function emptyView() {
         current: null,
         upcoming: [],
         total: 0,
+        volume: 100,
+        canPrevious: false,
     };
 }
 
@@ -37,7 +42,7 @@ function setResult(text, kind) {
 
 function formatTime(ms) {
     if (!Number.isFinite(ms) || ms < 0) {
-        return '0:00';
+        ms = 0;
     }
     const total = Math.floor(ms / 1000);
     const hours = Math.floor(total / 3600);
@@ -46,7 +51,14 @@ function formatTime(ms) {
     if (hours > 0) {
         return `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`;
     }
-    return `${minutes}:${seconds}`;
+    return `${String(minutes).padStart(2, '0')}:${seconds}`;
+}
+
+function statusLabel(status) {
+    if (status === 'playing') return 'Playing';
+    if (status === 'buffering') return 'Buffering';
+    if (status === 'paused') return 'Paused';
+    return 'Stopped';
 }
 
 function selectedGuild() {
@@ -107,13 +119,18 @@ function paintPresence() {
         : 'Not in voice. Pick a voice channel and Add will join it.';
 }
 
+function paintClock(position, duration) {
+    const end = duration ? formatTime(duration) : '00:00';
+    clockEl.textContent = `${formatTime(position)} / ${end}`;
+}
+
 function paintTransport() {
     const current = view.current;
     nowTitle.textContent = current?.title || 'Nothing queued';
     const position = scrubbing ? Number(scrub.value) : view.positionMs || 0;
     const duration = view.durationMs;
-    elapsedEl.textContent = formatTime(position);
-    durationEl.textContent = duration ? formatTime(duration) : '—';
+    playStateEl.textContent = statusLabel(view.status);
+    paintClock(position, duration);
     if (!scrubbing) {
         if (duration) {
             scrub.max = String(duration);
@@ -124,13 +141,26 @@ function paintTransport() {
         }
     }
     const playing = view.status === 'playing' || view.status === 'buffering';
-    toggleBtn.textContent = playing ? 'Pause' : 'Play';
+    toggleBtn.dataset.mode = playing ? 'pause' : 'play';
+    toggleBtn.title = playing ? 'Pause' : 'Play';
+    toggleBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    const stopped = !playing && view.status !== 'paused';
+    toggleBtn.classList.toggle('active', playing);
+    toggleBtn.setAttribute('aria-pressed', playing ? 'true' : 'false');
+    stopBtn.classList.toggle('active', stopped);
+    stopBtn.setAttribute('aria-pressed', stopped ? 'true' : 'false');
+    if (!voluming && Number.isFinite(view.volume)) {
+        volumeInput.value = String(view.volume);
+    }
     const hasTrack = Boolean(current);
     $('back').disabled = !hasTrack || busy;
     $('forward').disabled = !hasTrack || busy;
     $('skip').disabled = !hasTrack || busy;
+    $('previous').disabled = (!hasTrack && !view.canPrevious) || busy;
     toggleBtn.disabled = !hasTrack || busy;
+    stopBtn.disabled = !hasTrack || busy;
     scrub.disabled = !hasTrack || busy;
+    volumeInput.disabled = !guildSelect.value || busy;
 }
 
 function paintQueue() {
@@ -262,6 +292,8 @@ toggleBtn.addEventListener('click', () => {
     const playing = view.status === 'playing' || view.status === 'buffering';
     control(playing ? 'queue_pause' : 'queue_play');
 });
+$('stop').addEventListener('click', () => control('queue_stop'));
+$('previous').addEventListener('click', () => control('queue_previous'));
 $('back').addEventListener('click', () => control('queue_back'));
 $('forward').addEventListener('click', () => control('queue_forward'));
 $('skip').addEventListener('click', () => control('skip'));
@@ -270,18 +302,28 @@ scrub.addEventListener('pointerdown', () => {
     scrubbing = true;
 });
 scrub.addEventListener('input', () => {
-    elapsedEl.textContent = formatTime(Number(scrub.value));
+    paintClock(Number(scrub.value), view.durationMs);
 });
 scrub.addEventListener('change', () => {
     const positionMs = Number(scrub.value);
     scrubbing = false;
     control('queue_seek', { positionMs });
 });
-scrub.addEventListener('pointerup', () => {
-    scrubbing = false;
-});
 scrub.addEventListener('pointercancel', () => {
     scrubbing = false;
+});
+
+volumeInput.addEventListener('pointerdown', () => {
+    voluming = true;
+});
+volumeInput.addEventListener('change', () => {
+    voluming = false;
+    const percent = Math.round(Number(volumeInput.value) / 5) * 5;
+    volumeInput.value = String(Math.min(100, Math.max(0, percent)));
+    control('volume', { percent: Number(volumeInput.value) });
+});
+volumeInput.addEventListener('pointercancel', () => {
+    voluming = false;
 });
 
 function persistSelectors() {

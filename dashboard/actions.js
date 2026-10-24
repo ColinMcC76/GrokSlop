@@ -12,6 +12,8 @@ const {
     resumePlayback,
     seekPlayback,
     seekBy,
+    stopPlayback,
+    previousTrack,
     removeUpcoming,
     SEEK_STEP_MS,
 } = require('../services/youtubeQueue');
@@ -371,6 +373,21 @@ const handlers = {
         }
         resumePlayback(ctx.guild.id);
         return 'Playing.';
+    },
+
+    async queue_stop(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        stopPlayback(ctx.guild.id);
+        return 'Stopped.';
+    },
+
+    async queue_previous(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        return previousTrack(ctx.guild.id);
     },
 
     async queue_back(ctx) {
