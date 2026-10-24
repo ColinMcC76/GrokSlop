@@ -436,8 +436,18 @@ function startDashboard(client) {
             }
 
             if (pathname === '/api/soundbites' && req.method === 'GET') {
-                const { listSoundbites } = require('../services/soundboard');
-                sendJson(res, 200, { ok: true, soundbites: listSoundbites() });
+                const { listSoundbites, getSoundbitePlayback } = require('../services/soundboard');
+                sendJson(res, 200, {
+                    ok: true,
+                    soundbites: listSoundbites(),
+                    playing: getSoundbitePlayback(),
+                });
+                return;
+            }
+
+            if (req.method === 'POST' && pathname === '/api/soundbites/stop') {
+                const { stopSoundbite } = require('../services/soundboard');
+                sendJson(res, 200, { ok: true, message: stopSoundbite() });
                 return;
             }
 
