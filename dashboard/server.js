@@ -457,6 +457,8 @@ function startDashboard(client) {
                         current: null,
                         upcoming: [],
                         total: 0,
+                        volume: 100,
+                        canPrevious: false,
                     }),
                 });
                 return;

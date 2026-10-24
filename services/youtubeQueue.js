@@ -51,11 +51,15 @@ function isPlayDlInstalled() {
  *   volumePercent: number,
  *   startOffsetMs: number,
  *   cachedFile: { url: string, filePath: string } | null,
+ *   history: QueueItem[],
+ *   stopped: boolean,
  * }} GuildQueueState
  */
 
 const MAX_PLAYLIST_TRACKS = 25;
 const SEEK_STEP_MS = 10_000;
+const PREVIOUS_RESTART_MS = 3_000;
+const HISTORY_LIMIT = 25;
 const IDLE_WAIT_MS = 3_600_000;
 const MAX_YTDLP_STDERR_BYTES = 128 * 1024;
 const YT_CACHE_DIR = path.join(__dirname, '..', 'data', 'yt-cache');
@@ -746,11 +750,19 @@ function getOrCreateState(guildId, player) {
             volumePercent: 100,
             startOffsetMs: 0,
             cachedFile: null,
+            history: [],
+            stopped: false,
         };
         queues.set(guildId, s);
     }
     if (typeof s.volumePercent !== 'number' || Number.isNaN(s.volumePercent)) {
         s.volumePercent = 100;
+    }
+    if (!Array.isArray(s.history)) {
+        s.history = [];
+    }
+    if (typeof s.stopped !== 'boolean') {
+        s.stopped = false;
     }
     s.player = player;
     return s;
@@ -1095,9 +1107,24 @@ async function openTrackResource(state, item, startMs, gen) {
     throw new Error('No YouTube stream source available.');
 }
 
+function pushHistory(state, item) {
+    if (!item) {
+        return;
+    }
+    if (!Array.isArray(state.history)) {
+        state.history = [];
+    }
+    state.history.push(item);
+    if (state.history.length > HISTORY_LIMIT) {
+        state.history.splice(0, state.history.length - HISTORY_LIMIT);
+    }
+}
+
 function finishTrack(state) {
-    state.items.shift();
+    const finished = state.items.shift();
+    pushHistory(state, finished);
     state.startOffsetMs = 0;
+    state.stopped = false;
     killYtdlpChild(state);
     if (!state.items[0] || state.cachedFile?.url !== state.items[0].url) {
         discardCachedFile(state);
@@ -1140,6 +1167,7 @@ async function enqueue(guildId, player, textChannel, query) {
     state.items.push(...items);
 
     if (wasEmpty && state.player.state.status === AudioPlayerStatus.Idle) {
+        state.stopped = false;
         chainDrain(state, () => playCurrentTrack(state));
     }
 
@@ -1178,6 +1206,7 @@ async function enqueueIntro(guildId, player, textChannel, query, meta = {}) {
     track.introUser = meta.displayName || 'Someone';
 
     state.items.unshift(track);
+    state.stopped = false;
 
     if (state.player.state.status !== AudioPlayerStatus.Idle) {
         state.generation += 1;
@@ -1213,6 +1242,7 @@ function enqueueIntroTrack(guildId, player, textChannel, track, meta = {}) {
         introUser: meta.displayName || 'Someone',
     };
     state.items.unshift(item);
+    state.stopped = false;
 
     if (state.player.state.status !== AudioPlayerStatus.Idle) {
         state.generation += 1;
@@ -1239,7 +1269,7 @@ function suspendForExternalAudio(guildId) {
     if (!state || state.items.length === 0) {
         return Promise.resolve(false);
     }
-    state.startOffsetMs = currentPositionMs(state);
+    state.startOffsetMs = heldPositionMs(state);
     state.generation += 1;
     killYtdlpChild(state);
     try {
@@ -1257,7 +1287,7 @@ function resumeAfterExternalAudio(guildId) {
     if (!state || state.items.length === 0) {
         return;
     }
-    if (state.player.state.status !== AudioPlayerStatus.Idle) {
+    if (state.stopped || state.player.state.status !== AudioPlayerStatus.Idle) {
         return;
     }
     chainDrain(state, () => playCurrentTrack(state, { announce: false }));
@@ -1271,7 +1301,7 @@ function ensurePlaying(guildId) {
     if (!state || state.items.length === 0) {
         return;
     }
-    if (state.player.state.status !== AudioPlayerStatus.Idle) {
+    if (state.stopped || state.player.state.status !== AudioPlayerStatus.Idle) {
         return;
     }
     chainDrain(state, () => playCurrentTrack(state));
@@ -1284,11 +1314,13 @@ function skip(guildId) {
     }
     state.generation += 1;
     state.startOffsetMs = 0;
+    state.stopped = false;
     killYtdlpChild(state);
     try {
         state.player.stop(true);
     } catch {}
-    state.items.shift();
+    const skipped = state.items.shift();
+    pushHistory(state, skipped);
     if (!state.items[0] || state.cachedFile?.url !== state.items[0].url) {
         discardCachedFile(state);
     }
@@ -1303,6 +1335,8 @@ function stopAndClear(guildId) {
     }
     state.generation += 1;
     state.startOffsetMs = 0;
+    state.stopped = false;
+    state.history = [];
     killYtdlpChild(state);
     state.items.length = 0;
     discardCachedFile(state);
@@ -1319,6 +1353,8 @@ function removeGuild(guildId) {
     }
     state.generation += 1;
     state.startOffsetMs = 0;
+    state.stopped = false;
+    state.history = [];
     killYtdlpChild(state);
     state.items.length = 0;
     discardCachedFile(state);
@@ -1386,7 +1422,8 @@ function getYoutubeVolume(guildId) {
     return typeof p === 'number' && !Number.isNaN(p) ? p : 100;
 }
 
-function emptyQueueView() {
+function emptyQueueView(guildId) {
+    const state = guildId ? queues.get(guildId) : null;
     return {
         status: 'idle',
         positionMs: 0,
@@ -1394,6 +1431,8 @@ function emptyQueueView() {
         current: null,
         upcoming: [],
         total: 0,
+        volume: guildId ? getYoutubeVolume(guildId) : 100,
+        canPrevious: Boolean(state?.history?.length),
     };
 }
 
@@ -1401,12 +1440,18 @@ function getQueueView(guildId) {
     const state = queues.get(guildId);
     const snap = getQueueSnapshot(guildId);
     if (!snap.current) {
-        return emptyQueueView();
+        return emptyQueueView(guildId);
     }
-    const status = playerStatus(state);
+    const stopped = Boolean(state?.stopped);
+    const status = stopped ? 'stopped' : playerStatus(state);
+    const positionMs = stopped
+        ? Math.max(0, state.startOffsetMs || 0)
+        : status === 'idle'
+            ? 0
+            : currentPositionMs(state);
     return {
         status,
-        positionMs: status === 'idle' ? 0 : currentPositionMs(state),
+        positionMs,
         durationMs: snap.current.durationMs || null,
         current: publicQueueItem(snap.current),
         upcoming: snap.upcoming.map((item, index) => ({
@@ -1414,6 +1459,8 @@ function getQueueView(guildId) {
             index,
         })),
         total: snap.total,
+        volume: getYoutubeVolume(guildId),
+        canPrevious: true,
     };
 }
 
@@ -1421,6 +1468,9 @@ function pausePlayback(guildId) {
     const state = queues.get(guildId);
     if (!state || state.items.length === 0) {
         throw queueFail('Nothing is playing or queued.');
+    }
+    if (state.stopped) {
+        return getQueueView(guildId);
     }
     const status = playerStatus(state);
     if (status === 'paused') {
@@ -1444,16 +1494,19 @@ function resumePlayback(guildId) {
     if (!state || state.items.length === 0) {
         throw queueFail('Nothing is queued.');
     }
-    const status = playerStatus(state);
+    const status = state.stopped ? 'stopped' : playerStatus(state);
+    if (status === 'playing' || status === 'buffering') {
+        return getQueueView(guildId);
+    }
     if (status === 'paused') {
+        state.stopped = false;
         if (state.player.state.status === AudioPlayerStatus.Paused) {
             state.player.unpause();
         }
         return getQueueView(guildId);
     }
-    if (status === 'idle') {
-        chainDrain(state, () => playCurrentTrack(state, { announce: false }));
-    }
+    state.stopped = false;
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
     return getQueueView(guildId);
 }
 
@@ -1463,12 +1516,19 @@ function seekPlayback(guildId, positionMs) {
         throw queueFail('Nothing is playing or queued.');
     }
     const duration = state.items[0].durationMs;
-    let target = Math.max(0, Math.round(Number(positionMs) || 0));
-    if (Math.abs(target - currentPositionMs(state)) < 400) {
+    const target = Math.max(0, Math.round(Number(positionMs) || 0));
+    const here = state.stopped
+        ? Math.max(0, state.startOffsetMs || 0)
+        : currentPositionMs(state);
+    if (Math.abs(target - here) < 400) {
         return getQueueView(guildId);
     }
     if (duration && target >= duration - 400) {
         skip(guildId);
+        return getQueueView(guildId);
+    }
+    if (state.stopped) {
+        state.startOffsetMs = target;
         return getQueueView(guildId);
     }
     state.startOffsetMs = target;
@@ -1489,7 +1549,64 @@ function seekBy(guildId, deltaMs) {
     if (!state || state.items.length === 0) {
         throw queueFail('Nothing is playing or queued.');
     }
-    return seekPlayback(guildId, currentPositionMs(state) + deltaMs);
+    return seekPlayback(guildId, heldPositionMs(state) + deltaMs);
+}
+
+function stopPlayback(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        throw queueFail('Nothing is playing or queued.');
+    }
+    state.stopped = true;
+    state.startOffsetMs = 0;
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.stop(true);
+    } catch {}
+    return getQueueView(guildId);
+}
+
+function previousTrack(guildId) {
+    const state = queues.get(guildId);
+    if (!state || (state.items.length === 0 && !(state.history && state.history.length))) {
+        throw queueFail('Nothing is queued.');
+    }
+    if (!Array.isArray(state.history)) {
+        state.history = [];
+    }
+    const position = state.items.length ? heldPositionMs(state) : PREVIOUS_RESTART_MS + 1;
+    if (state.items.length > 0 && position > PREVIOUS_RESTART_MS) {
+        seekPlayback(guildId, 0);
+        return 'Back to the start.';
+    }
+    const prev = state.history.length ? state.history.pop() : null;
+    if (!prev) {
+        seekPlayback(guildId, 0);
+        return 'Back to the start.';
+    }
+    state.items.unshift(prev);
+    state.startOffsetMs = 0;
+    if (state.cachedFile && state.cachedFile.url !== prev.url) {
+        discardCachedFile(state);
+    }
+    if (state.stopped) {
+        return 'Previous.';
+    }
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.stop(true);
+    } catch {}
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+    return 'Previous.';
+}
+
+function heldPositionMs(state) {
+    if (state.stopped) {
+        return Math.max(0, state.startOffsetMs || 0);
+    }
+    return currentPositionMs(state);
 }
 
 function removeUpcoming(guildId, index) {
@@ -1526,6 +1643,8 @@ module.exports = {
     resumePlayback,
     seekPlayback,
     seekBy,
+    stopPlayback,
+    previousTrack,
     removeUpcoming,
     SEEK_STEP_MS,
 };
