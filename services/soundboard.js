@@ -36,6 +36,12 @@ const updateBite = db.prepare(`
 const deleteBite = db.prepare(`DELETE FROM soundbites WHERE id = ?`);
 
 let playback = Promise.resolve();
+let playbackDepth = 0;
+let stopRequested = false;
+/** @type {{ stop: () => void } | null} */
+let activePlayback = null;
+/** @type {{ id: string, name: string, token: symbol } | null} */
+let nowPlaying = null;
 
 function fail(message, statusCode = 400) {
     const err = new Error(message);
@@ -112,6 +118,26 @@ function removeFile(id, ext) {
 
 function listSoundbites() {
     return selectAll.all().map(rowToPublic);
+}
+
+function getSoundbitePlayback() {
+    if (!nowPlaying) {
+        return null;
+    }
+    return { id: nowPlaying.id, name: nowPlaying.name };
+}
+
+function stopSoundbite() {
+    if (playbackDepth === 0) {
+        throw fail('Nothing is playing.');
+    }
+    stopRequested = true;
+    try {
+        activePlayback?.stop();
+    } catch {
+        /* the player may already be gone */
+    }
+    return 'Stopped.';
 }
 
 function getSoundbite(id) {
@@ -213,6 +239,7 @@ function playFileOnPlayer(player, filePath, volumePercent) {
         );
         let stderr = '';
         let settled = false;
+        let stopped = false;
         ffmpeg.stderr.on('data', (chunk) => {
             stderr = (stderr + chunk.toString()).slice(-500);
         });
@@ -229,11 +256,30 @@ function playFileOnPlayer(player, filePath, volumePercent) {
         const finish = (err) => {
             if (settled) return;
             settled = true;
+            if (activePlayback?.stop === stop) {
+                activePlayback = null;
+            }
             try {
                 ffmpeg.kill('SIGKILL');
-            } catch {}
+            } catch {
+                /* already exited */
+            }
+            if (stopped) {
+                resolve(true);
+                return;
+            }
             if (err) reject(err);
-            else resolve();
+            else resolve(false);
+        };
+
+        const stop = () => {
+            stopped = true;
+            try {
+                player.stop(true);
+            } catch {
+                /* player may already be idle */
+            }
+            finish();
         };
 
         ffmpeg.on('error', (err) => finish(fail(err.message || String(err))));
@@ -243,11 +289,17 @@ function playFileOnPlayer(player, filePath, volumePercent) {
             }
         });
 
+        activePlayback = { stop };
+        if (stopRequested) {
+            stop();
+            return;
+        }
+
         player.play(resource);
         entersState(player, AudioPlayerStatus.Playing, 10_000)
             .then(() => entersState(player, AudioPlayerStatus.Idle, PLAY_TIMEOUT_MS))
             .then(() => finish())
-            .catch((err) => finish(voiceFailure(err)));
+            .catch((err) => finish(stopped ? null : voiceFailure(err)));
     });
 }
 
@@ -292,34 +344,63 @@ async function playSoundbite(client, opts) {
     }
 
     const run = playback.catch(() => {}).then(async () => {
-        let connection = getConnectionData(guildId);
-        if (!connection) {
-            const voiceChannelId = String(opts.voiceChannelId || '').trim();
-            if (!voiceChannelId) {
-                throw fail('Join a voice channel first, or pick one on this page.');
-            }
-            const channel =
-                guild.channels.cache.get(voiceChannelId) ||
-                (await guild.channels.fetch(voiceChannelId).catch(() => null));
-            if (!channel || !channel.isVoiceBased()) {
-                throw fail('Pick a voice channel.');
-            }
-            try {
-                connection = await joinChannel(channel);
-            } catch (err) {
-                throw voiceFailure(err);
-            }
-        }
-
-        const resume = await suspendForExternalAudio(guildId);
+        playbackDepth += 1;
+        const token = Symbol('soundbite');
+        nowPlaying = { id: row.id, name: row.name, token };
+        let resume = false;
         try {
-            await playFileOnPlayer(connection.player, absolute, getYoutubeVolume(guildId));
+            if (stopRequested) {
+                return 'Stopped.';
+            }
+            let connection = getConnectionData(guildId);
+            if (!connection) {
+                const voiceChannelId = String(opts.voiceChannelId || '').trim();
+                if (!voiceChannelId) {
+                    throw fail('Join a voice channel first, or pick one on this page.');
+                }
+                const channel =
+                    guild.channels.cache.get(voiceChannelId) ||
+                    (await guild.channels.fetch(voiceChannelId).catch(() => null));
+                if (!channel || !channel.isVoiceBased()) {
+                    throw fail('Pick a voice channel.');
+                }
+                try {
+                    connection = await joinChannel(channel);
+                } catch (err) {
+                    throw voiceFailure(err);
+                }
+            }
+            if (stopRequested) {
+                return 'Stopped.';
+            }
+
+            resume = await suspendForExternalAudio(guildId);
+            if (stopRequested) {
+                return 'Stopped.';
+            }
+            const stopped = await playFileOnPlayer(
+                connection.player,
+                absolute,
+                getYoutubeVolume(guildId)
+            );
+            if (stopped) {
+                return `Stopped “${row.name}”.`;
+            }
+            return `Played “${row.name}”.`;
         } finally {
+            playbackDepth -= 1;
+            stopRequested = false;
+            if (nowPlaying?.token === token) {
+                nowPlaying = null;
+            }
             if (resume) {
-                resumeAfterExternalAudio(guildId);
+                try {
+                    resumeAfterExternalAudio(guildId);
+                } catch (err) {
+                    console.warn('[soundboard] could not resume music:', err?.message || err);
+                }
             }
         }
-        return `Played “${row.name}”.`;
     });
     playback = run.then(
         () => undefined,
@@ -330,6 +411,8 @@ async function playSoundbite(client, opts) {
 
 module.exports = {
     listSoundbites,
+    getSoundbitePlayback,
+    stopSoundbite,
     createSoundbite,
     updateSoundbite,
     deleteSoundbite,

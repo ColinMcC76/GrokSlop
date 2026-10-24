@@ -11,6 +11,9 @@ const grid = $('grid');
 let latest = null;
 let soundbites = [];
 let busyId = null;
+let serverPlayingId = null;
+let editing = false;
+let stopping = false;
 
 function setResult(text, kind) {
     resultEl.textContent = text;
@@ -101,7 +104,10 @@ async function loadBites() {
         throw new Error(data.message || 'Could not load soundbites.');
     }
     soundbites = data.soundbites || [];
-    paintBites();
+    serverPlayingId = data.playing?.id || null;
+    if (!editing) {
+        paintBites();
+    }
 }
 
 function paintBites() {
@@ -131,24 +137,34 @@ function renderBite(bite) {
     const row = document.createElement('div');
     row.className = 'row';
 
+    const activeId = busyId || serverPlayingId;
+    const playing = activeId === bite.id;
+
     const play = document.createElement('button');
     play.type = 'button';
-    play.textContent = busyId === bite.id ? 'Playing…' : 'Play';
-    play.disabled = Boolean(busyId);
-    play.addEventListener('click', () => playBite(bite, play));
+    play.textContent = playing ? 'Stop' : 'Play';
+    play.className = playing ? 'danger' : '';
+    play.disabled = Boolean(activeId) && !playing;
+    play.addEventListener('click', () => {
+        if (playing) {
+            stopPlayback();
+            return;
+        }
+        playBite(bite);
+    });
 
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'quiet';
     edit.textContent = 'Edit';
-    edit.disabled = Boolean(busyId);
+    edit.disabled = Boolean(activeId);
     edit.addEventListener('click', () => startEdit(card, bite));
 
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'danger';
     remove.textContent = 'Delete';
-    remove.disabled = Boolean(busyId);
+    remove.disabled = Boolean(activeId);
     remove.addEventListener('click', () => removeBite(bite));
 
     row.append(play, edit, remove);
@@ -157,6 +173,7 @@ function renderBite(bite) {
 }
 
 function startEdit(card, bite) {
+    editing = true;
     card.replaceChildren();
     const name = document.createElement('input');
     name.type = 'text';
@@ -178,7 +195,10 @@ function startEdit(card, bite) {
     cancel.type = 'button';
     cancel.className = 'quiet';
     cancel.textContent = 'Cancel';
-    cancel.addEventListener('click', paintBites);
+    cancel.addEventListener('click', () => {
+        editing = false;
+        paintBites();
+    });
     save.addEventListener('click', () => saveEdit(bite, name.value, file.files[0], save));
     row.append(save, cancel);
     card.append(name, file, fileLabel, row);
@@ -207,6 +227,7 @@ async function saveEdit(bite, name, file, button) {
             }
         }
         setResult(`Saved “${name.trim()}”.`, 'ok');
+        editing = false;
         await loadBites();
     } catch (err) {
         setResult(err.message || String(err), 'err');
@@ -229,11 +250,9 @@ async function removeBite(bite) {
     }
 }
 
-async function playBite(bite, button) {
-    if (busyId) return;
+async function playBite(bite) {
+    if (busyId || serverPlayingId) return;
     busyId = bite.id;
-    button.disabled = true;
-    button.textContent = 'Playing…';
     paintBites();
     setResult(`Playing “${bite.name}”…`, 'pending');
     try {
@@ -255,7 +274,45 @@ async function playBite(bite, button) {
         setResult(err.message || String(err), 'err');
     } finally {
         busyId = null;
+        serverPlayingId = null;
         paintBites();
+    }
+}
+
+async function stopPlayback() {
+    if (stopping) return;
+    stopping = true;
+    const button = $('stop');
+    button.disabled = true;
+    setResult('Stopping…', 'pending');
+    try {
+        const response = await fetch('/api/soundbites/stop', { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || 'Could not stop playback.');
+        }
+        setResult(data.message || 'Stopped.', 'ok');
+    } catch (err) {
+        setResult(err.message || String(err), 'err');
+    } finally {
+        stopping = false;
+        button.disabled = false;
+    }
+}
+
+async function refreshPlaying() {
+    try {
+        const response = await fetch('/api/soundbites');
+        const data = await response.json();
+        if (!response.ok || !data.ok) return;
+        const next = data.playing?.id || null;
+        if (next === serverPlayingId) return;
+        serverPlayingId = next;
+        if (!editing && !busyId) {
+            paintBites();
+        }
+    } catch {
+        /* the status line already reports a dead panel */
     }
 }
 
@@ -365,6 +422,9 @@ voiceSelect.addEventListener('change', () => {
     writeSelection(patch);
 });
 
+$('stop').addEventListener('click', () => stopPlayback());
+
 refreshStatus();
 setInterval(refreshStatus, 4000);
+setInterval(refreshPlaying, 2000);
 loadBites().catch((err) => setResult(err.message || String(err), 'err'));
