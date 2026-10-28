@@ -14,6 +14,7 @@ const {
     seekBy,
     stopPlayback,
     previousTrack,
+    moveQueueItem,
     removeUpcoming,
     SEEK_STEP_MS,
 } = require('../services/youtubeQueue');
@@ -422,6 +423,11 @@ const handlers = {
         const index = Number(ctx.body.index);
         removeUpcoming(ctx.guild.id, index);
         return 'Removed from the queue.';
+    },
+
+    async queue_reorder(ctx) {
+        moveQueueItem(ctx.guild.id, ctx.body.fromIndex, ctx.body.toIndex);
+        return 'Queue order updated.';
     },
 
     async stop(ctx) {
