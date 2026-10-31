@@ -630,6 +630,12 @@ button.danger {
     font-size: 12px;
 }
 
+.hint code {
+    color: var(--text);
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 12px;
+}
+
 .log-wrap {
     display: flex;
     flex-direction: column;
