@@ -651,14 +651,63 @@ async function downloadYoutubeViaYtdlp(url, profile) {
 }
 
 /**
+ * A piped yt-dlp download ignores --download-sections for most YouTube
+ * clients and restarts at 0. Seek through a direct URL ffmpeg can range
+ * into, then a full file, before falling back to that pipe.
  * @param {string} url
+ * @param {YtdlpProfile[]} profiles
+ * @param {number} startMs
+ * @param {string[]} errors
  */
+async function streamSeekableYoutube(url, profiles, startMs, errors) {
+    for (const profile of profiles) {
+        try {
+            const directUrl = await getYtdlpDirectUrl(url, profile);
+            const result = await streamUrlViaFfmpeg(directUrl, startMs);
+            console.log(
+                `[YouTube queue] seeking via ffmpeg (${profile.name}) at ${startMs}ms`
+            );
+            return { ...result, mode: 'ffmpeg-url' };
+        } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`seek ${profile.name}: ${msg}`);
+            console.warn(`[YouTube queue] ffmpeg seek (${profile.name}) failed:`, msg);
+        }
+    }
+
+    for (const profile of profiles) {
+        try {
+            const filePath = await downloadYoutubeViaYtdlp(url, profile);
+            console.log(
+                `[YouTube queue] seeking via downloaded file (${profile.name})`
+            );
+            return { filePath, mode: 'ytdlp-file' };
+        } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`seek download ${profile.name}: ${msg}`);
+            console.warn(
+                `[YouTube queue] seek download (${profile.name}) failed:`,
+                msg
+            );
+        }
+    }
+
+    return null;
+}
+
 async function streamYoutubeWithFallbacks(url, options = {}) {
     await logYtdlpVersionOnce();
-    const startMs = options.startMs || 0;
+    const startMs = Math.max(0, options.startMs || 0);
 
     const profiles = getYtdlpProfiles();
     const errors = [];
+
+    if (startMs >= 1000) {
+        const sought = await streamSeekableYoutube(url, profiles, startMs, errors);
+        if (sought) {
+            return sought;
+        }
+    }
 
     for (const profile of profiles) {
         try {
@@ -1098,7 +1147,7 @@ async function openTrackResource(state, item, startMs, gen) {
     if (streamed.stream) {
         watchChild(state, streamed.child);
         return createAudioResource(streamed.stream, {
-            inputType: StreamType.Arbitrary,
+            inputType: streamed.mode === 'ffmpeg-url' ? StreamType.Raw : StreamType.Arbitrary,
             inlineVolume: true,
             metadata: { title: item.title, url: item.url },
         });
@@ -1443,12 +1492,17 @@ function getQueueView(guildId) {
         return emptyQueueView(guildId);
     }
     const stopped = Boolean(state?.stopped);
-    const status = stopped ? 'stopped' : playerStatus(state);
-    const positionMs = stopped
+    const liveStatus = playerStatus(state);
+    // A seek stops the player before the new resource exists. Reporting that
+    // gap as idle/0 snaps the timer back to the start.
+    const status = stopped
+        ? 'stopped'
+        : liveStatus === 'idle' && state.items.length > 0
+            ? 'buffering'
+            : liveStatus;
+    const positionMs = stopped || liveStatus === 'idle'
         ? Math.max(0, state.startOffsetMs || 0)
-        : status === 'idle'
-            ? 0
-            : currentPositionMs(state);
+        : currentPositionMs(state);
     return {
         status,
         positionMs,
@@ -1609,6 +1663,52 @@ function heldPositionMs(state) {
     return currentPositionMs(state);
 }
 
+function moveQueueItem(guildId, fromIndex, toIndex) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length < 2) {
+        throw queueFail('Add another song before changing the order.');
+    }
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    const count = state.items.length;
+    if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        from < 0 ||
+        to < 0 ||
+        from >= count ||
+        to >= count
+    ) {
+        throw queueFail('That song is not in the queue.');
+    }
+    if (from === to) {
+        return getQueueView(guildId);
+    }
+    const [item] = state.items.splice(from, 1);
+    state.items.splice(to, 0, item);
+    const headChanged = from === 0 || to === 0;
+    if (!headChanged) {
+        return getQueueView(guildId);
+    }
+    state.startOffsetMs = 0;
+    if (state.cachedFile && state.cachedFile.url !== state.items[0]?.url) {
+        discardCachedFile(state);
+    }
+    if (state.stopped) {
+        return getQueueView(guildId);
+    }
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.unpause();
+    } catch {}
+    try {
+        state.player.stop(true);
+    } catch {}
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+    return getQueueView(guildId);
+}
+
 function removeUpcoming(guildId, index) {
     const state = queues.get(guildId);
     if (!state || state.items.length < 2) {
@@ -1645,6 +1745,7 @@ module.exports = {
     seekBy,
     stopPlayback,
     previousTrack,
+    moveQueueItem,
     removeUpcoming,
     SEEK_STEP_MS,
 };

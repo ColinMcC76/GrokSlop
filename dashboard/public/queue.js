@@ -20,7 +20,10 @@ let latest = null;
 let view = emptyView();
 let scrubbing = false;
 let voluming = false;
+let dragging = false;
+let pointerDrag = null;
 let busy = false;
+let seekHold = null;
 
 function emptyView() {
     return {
@@ -159,40 +162,131 @@ function paintTransport() {
     $('previous').disabled = (!hasTrack && !view.canPrevious) || busy;
     toggleBtn.disabled = !hasTrack || busy;
     stopBtn.disabled = !hasTrack || busy;
-    scrub.disabled = !hasTrack || busy;
+    scrub.disabled = !hasTrack;
     volumeInput.disabled = !guildSelect.value || busy;
 }
 
+function queueRows() {
+    const rows = [];
+    if (view.current) {
+        rows.push({ ...view.current, index: 0, playing: true });
+    }
+    for (const item of view.upcoming) {
+        rows.push({ ...item, index: item.index + 1, playing: false });
+    }
+    return rows;
+}
+
+function finishPointerDrag(event) {
+    if (!pointerDrag) return;
+    const info = pointerDrag;
+    pointerDrag = null;
+    dragging = false;
+    info.row.classList.remove('dragging');
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.queue-item');
+    clearDropMarks();
+    if (!info.active || !target) {
+        paintQueue();
+        return;
+    }
+    const index = Number(target.dataset.index);
+    const rect = target.getBoundingClientRect();
+    const before = event.clientY < rect.top + rect.height / 2;
+    let to = before ? index : index + 1;
+    if (info.from < to) to -= 1;
+    if (Number.isInteger(info.from) && info.from !== to) {
+        control('queue_reorder', { fromIndex: info.from, toIndex: to });
+    } else {
+        paintQueue();
+    }
+}
+
+function clearDropMarks() {
+    queueList.querySelectorAll('.drop-before, .drop-after').forEach((row) => {
+        row.classList.remove('drop-before', 'drop-after');
+    });
+}
+
 function paintQueue() {
+    if (dragging) return;
     queueList.replaceChildren();
-    if (!view.upcoming.length) {
+    const rows = queueRows();
+    if (!rows.length) {
         const empty = document.createElement('p');
         empty.className = 'empty';
-        empty.textContent = view.current
-            ? 'Nothing else is queued.'
-            : 'The queue is empty. Add a link or a search above.';
+        empty.textContent = 'The queue is empty. Add a link or a search above.';
         queueList.appendChild(empty);
         return;
     }
-    view.upcoming.forEach((item, index) => {
+    if (rows.length > 1) {
+        const hint = document.createElement('p');
+        hint.className = 'hint queue-hint';
+        hint.textContent = 'Drag songs into the order you want.';
+        queueList.appendChild(hint);
+    }
+    rows.forEach((item) => {
         const row = document.createElement('div');
-        row.className = 'queue-item';
+        row.className = item.playing ? 'queue-item is-playing' : 'queue-item';
+        row.dataset.index = String(item.index);
+        row.draggable = false;
+        const grip = document.createElement('span');
+        grip.className = 'queue-grip';
+        grip.setAttribute('aria-hidden', 'true');
+        grip.textContent = '≡';
         const num = document.createElement('span');
         num.className = 'queue-num';
-        num.textContent = String(index + 1);
+        num.textContent = item.playing ? 'Now' : String(item.index + 1);
         const title = document.createElement('span');
         title.className = 'queue-title';
         title.textContent = item.title || 'YouTube';
         const time = document.createElement('span');
         time.className = 'queue-time';
         time.textContent = item.durationMs ? formatTime(item.durationMs) : '';
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.className = 'quiet';
-        remove.textContent = 'Remove';
-        remove.disabled = busy;
-        remove.addEventListener('click', () => control('queue_remove', { index }));
-        row.append(num, title, time, remove);
+        row.append(grip, num, title, time);
+        if (!item.playing) {
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'quiet';
+            remove.textContent = 'Remove';
+            remove.disabled = busy;
+            remove.draggable = false;
+            remove.addEventListener('click', (event) => {
+                event.stopPropagation();
+                control('queue_remove', { index: item.index - 1 });
+            });
+            remove.addEventListener('dragstart', (event) => event.preventDefault());
+            row.append(remove);
+        }
+        row.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 || rows.length < 2 || busy) return;
+            if (event.target.closest('button')) return;
+            pointerDrag = {
+                from: item.index,
+                startY: event.clientY,
+                row,
+                active: false,
+            };
+            try {
+                row.setPointerCapture(event.pointerId);
+            } catch {}
+        });
+        row.addEventListener('pointermove', (event) => {
+            if (!pointerDrag || pointerDrag.row !== row) return;
+            if (!pointerDrag.active && Math.abs(event.clientY - pointerDrag.startY) < 4) return;
+            if (!pointerDrag.active) {
+                pointerDrag.active = true;
+                dragging = true;
+                row.classList.add('dragging');
+            }
+            const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.queue-item');
+            clearDropMarks();
+            if (!target) return;
+            const rect = target.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            target.classList.add(before ? 'drop-before' : 'drop-after');
+        });
+        row.addEventListener('pointerup', (event) => finishPointerDrag(event));
+        row.addEventListener('pointercancel', (event) => finishPointerDrag(event));
         queueList.appendChild(row);
     });
 }
@@ -223,6 +317,16 @@ async function refreshQueue() {
                 setResult(data.message || 'Could not load the queue.', 'err');
             }
             return;
+        }
+        if (seekHold && data.status !== 'stopped' && data.status !== 'paused') {
+            const reported = data.positionMs || 0;
+            if (Date.now() > seekHold.until || Math.abs(reported - seekHold.positionMs) < 1500) {
+                seekHold = null;
+            } else {
+                data.positionMs = seekHold.positionMs;
+            }
+        } else {
+            seekHold = null;
         }
         view = data;
         paintTransport();
@@ -307,6 +411,9 @@ scrub.addEventListener('input', () => {
 scrub.addEventListener('change', () => {
     const positionMs = Number(scrub.value);
     scrubbing = false;
+    seekHold = { positionMs, until: Date.now() + 8000 };
+    view.positionMs = positionMs;
+    paintClock(positionMs, view.durationMs);
     control('queue_seek', { positionMs });
 });
 scrub.addEventListener('pointercancel', () => {
