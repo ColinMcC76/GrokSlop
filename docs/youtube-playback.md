@@ -93,6 +93,27 @@ node index.js
 
 On first `/play`, the console logs `[YouTube queue] yt-dlp <version>`.
 
+## Header overflow (`HPE_HEADER_OVERFLOW`)
+
+`/play` used to ask **play-dl** for the title. YouTube's reply headers are often bigger than Node's 16KB default, which shows up as:
+
+```text
+Parse Error: Header overflow
+code: 'HPE_HEADER_OVERFLOW'
+```
+
+or, when the watch page no longer matches play-dl:
+
+```text
+Initial Response Data is undefined.
+```
+
+Starting the bot (`node index.js`) raises that limit automatically. If play-dl still cannot read the page, the same `/play` falls back to **yt-dlp** for the title and queue entry. Playback was already yt-dlp.
+
+## Audio plays in French (or another auto-dub)
+
+YouTube attaches auto-dubbed audio tracks to English videos. The smallest of those tracks was being selected, which is often French. `/play` now asks yt-dlp for the **original** audio track first (`format_note*=original`, then language preference), and only then any other audio. A video that is actually French still plays in French. Set `YT_DLP_FORMAT` only if you want a different selector.
+
 ## Logs
 
 Check `logs\error.log` for `[YouTube queue]` lines.
