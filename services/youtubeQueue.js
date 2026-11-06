@@ -7,12 +7,25 @@ const {
     StreamType,
 } = require('@discordjs/voice');
 const ffmpegStatic = require('ffmpeg-static');
+const {
+    YTDLP_FORMAT_SORT,
+    YTDLP_META_TEMPLATE,
+    m3u8AudioFormat,
+    resolvedAudioFormat,
+    parseYtdlpMetadata,
+    playDlLookupIsBroken,
+    ytdlpLookupTarget,
+    lookupFailure,
+} = require('./youtubeFormats');
 
 /** @type {Map<string, GuildQueueState>} */
 const queues = new Map();
 
 /** @type {string | null} */
 let cachedYtdlpVersion = null;
+
+/** play-dl keeps failing the same way for every video once YouTube breaks it. */
+let playDlLookupBroken = false;
 
 function getPlayDl() {
     try {
@@ -243,10 +256,10 @@ async function createYoutubeStream(play, url) {
  */
 
 function defaultYtdlpFormat() {
-    return (
-        process.env.YT_DLP_FORMAT ||
-        'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best/ba/b'
-    );
+    // Original audio first. A plain bestaudio/best plus `-S +abr` picks the
+    // smallest stream, and YouTube auto-dubs (often French) are frequently
+    // that stream even when the video is English.
+    return resolvedAudioFormat(process.env.YT_DLP_FORMAT);
 }
 
 /**
@@ -310,7 +323,7 @@ function getYtdlpProfiles() {
 
     profiles.push({
         name: 'm3u8-ios',
-        format: 'ba[protocol=m3u8_native]/bestaudio[ext=m4a]/bestaudio/best',
+        format: m3u8AudioFormat(),
         extraArgs: ytdlpProfileExtra(
             'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot'
         ),
@@ -347,7 +360,7 @@ function buildYtdlpArgs(url, profile, startMs = 0) {
         '-f',
         profile.format,
         '-S',
-        '+abr',
+        YTDLP_FORMAT_SORT,
         '-o',
         '-',
         '--no-playlist',
@@ -498,6 +511,8 @@ async function getYtdlpDirectUrl(url, profile) {
         '-g',
         '-f',
         profile.format,
+        '-S',
+        YTDLP_FORMAT_SORT,
         '--no-playlist',
         '--no-warnings',
         ...profile.extraArgs,
@@ -629,7 +644,7 @@ async function downloadYoutubeViaYtdlp(url, profile) {
         '-f',
         profile.format,
         '-S',
-        '+abr',
+        YTDLP_FORMAT_SORT,
         '-o',
         outTemplate,
         '--no-playlist',
@@ -855,25 +870,19 @@ function waitUntilIdle(player, gen, state) {
  * @param {string} query
  * @returns {Promise<QueueItem[]>}
  */
-async function resolveToQueueItems(query) {
+async function resolveWithPlayDl(query) {
     const play = getPlayDl();
-    const q = query.trim();
-    if (!q) {
-        throw new Error('Empty query.');
-    }
+    const validated = await play.validate(query).catch(() => false);
+    const kind = typeof validated === 'string' ? validated : '';
 
-    const normalized = normalizeYouTubeInput(q);
-    const validated = await play.validate(normalized).catch(() => false);
-    const v = typeof validated === 'string' ? validated : '';
-
-    if (v === 'yt_video') {
-        const info = await play.video_basic_info(normalized);
+    if (kind === 'yt_video') {
+        const info = await play.video_basic_info(query);
         const title = info.video_details?.title || 'YouTube';
-        return [queueItem(normalized, title, info.video_details?.durationInSec)];
+        return [queueItem(query, title, info.video_details?.durationInSec)];
     }
 
-    if (v === 'yt_playlist') {
-        const pl = await play.playlist_info(normalized, { incomplete: true });
+    if (kind === 'yt_playlist') {
+        const pl = await play.playlist_info(query, { incomplete: true });
         await pl.fetch();
         const videos = await pl.all_videos();
         return videos.slice(0, MAX_PLAYLIST_TRACKS).map((vid) => {
@@ -881,7 +890,7 @@ async function resolveToQueueItems(query) {
         });
     }
 
-    const results = await play.search(normalized, {
+    const results = await play.search(query, {
         limit: 1,
         source: { youtube: 'video' },
     });
@@ -889,7 +898,86 @@ async function resolveToQueueItems(query) {
         throw new Error('No YouTube results found.');
     }
     const first = results[0];
-    return [queueItem(first.url, first.title || q, first.durationInSec)];
+    return [queueItem(first.url, first.title || query, first.durationInSec)];
+}
+
+/**
+ * Title lookup that does not go through Node's HTTP parser.
+ * play-dl throws HPE_HEADER_OVERFLOW and "Initial Response Data is undefined"
+ * when YouTube's watch page is too big or no longer matches its scraper.
+ * @param {string} query
+ * @returns {Promise<QueueItem[]>}
+ */
+async function resolveWithYtdlp(query) {
+    const { target, playlist } = ytdlpLookupTarget(query);
+    const args = [
+        '--no-warnings',
+        '--no-progress',
+        '--print',
+        YTDLP_META_TEMPLATE,
+    ];
+    if (playlist) {
+        args.push('--flat-playlist', '--playlist-end', String(MAX_PLAYLIST_TRACKS));
+    } else {
+        args.push('--no-playlist');
+    }
+    const cookieFile = process.env.YT_DLP_COOKIES?.trim();
+    if (cookieFile) {
+        args.push('--cookies', cookieFile);
+    }
+    args.push(...ytdlpBaseExtraArgs(), target);
+
+    const { stdout } = await runYtdlpCollect(args, playlist ? 60_000 : 45_000);
+    const parsed = parseYtdlpMetadata(stdout).slice(
+        0,
+        playlist ? MAX_PLAYLIST_TRACKS : 1
+    );
+    if (!parsed.length) {
+        throw new Error('No YouTube results found.');
+    }
+    return parsed.map((row) =>
+        queueItem(normalizeYouTubeInput(row.url), row.title, row.durationInSec)
+    );
+}
+
+/**
+ * @param {string} query
+ * @returns {Promise<QueueItem[]>}
+ */
+async function resolveToQueueItems(query) {
+    const q = query.trim();
+    if (!q) {
+        throw new Error('Empty query.');
+    }
+
+    const normalized = normalizeYouTubeInput(q);
+    /** @type {unknown} */
+    let playErr = null;
+    if (!playDlLookupBroken && isPlayDlInstalled()) {
+        try {
+            return await resolveWithPlayDl(normalized);
+        } catch (err) {
+            playErr = err;
+            if (playDlLookupIsBroken(err)) {
+                playDlLookupBroken = true;
+                console.warn(
+                    '[YouTube queue] play-dl cannot read YouTube (header overflow or a page it does not understand). Later lookups use yt-dlp.',
+                    err?.message || err
+                );
+            } else {
+                console.warn(
+                    '[YouTube queue] play-dl lookup failed; trying yt-dlp:',
+                    err?.message || err
+                );
+            }
+        }
+    }
+
+    try {
+        return await resolveWithYtdlp(normalized);
+    } catch (ytdlpErr) {
+        throw lookupFailure(playErr, ytdlpErr);
+    }
 }
 
 function queueItem(url, title, durationInSec) {
