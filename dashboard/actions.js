@@ -76,6 +76,8 @@ const {
 const {
     runEquipmentCheck,
     generateBody,
+    connectedVoiceChannel,
+    postSoundOffTranscript,
 } = require('../services/equipmentCheck');
 const {
     addSubscription,
@@ -545,18 +547,36 @@ const handlers = {
         if (isRealtimeActive(ctx.guild.id)) {
             throw fail('Realtime voice is on. Turn it off before an equipment check sound-off.');
         }
-        if (!getConnectionData(ctx.guild.id)) {
-            throw fail('Join a voice channel first, then run sound-off.');
+        let channel = await connectedVoiceChannel(ctx.guild);
+        if (!channel?.isVoiceBased?.()) {
+            const selected = asString(ctx.body.voiceChannelId);
+            if (!selected) {
+                throw fail('Join a voice channel first, then run sound-off.');
+            }
+            channel = await fetchChannel(ctx.guild, selected, 'voice');
+            try {
+                await joinChannel(channel);
+            } catch (err) {
+                throw voiceFailure(err);
+            }
         }
-        const channel = await fetchChannel(ctx.guild, asString(ctx.body.textChannelId), 'text');
+        if (typeof channel.send !== 'function') {
+            throw fail('That voice channel has no text chat to post the transcript in.');
+        }
         const prompt = asString(ctx.body.prompt, 500) || null;
         const body = await generateBody(ctx.guild.id, prompt);
         const audioPath = await generateSpeech(body, {
             instructions: persona.equipmentCheckTtsInstructions,
         });
-        await playAudio(ctx.guild.id, audioPath);
-        await runEquipmentCheck(null, prompt, { guild: ctx.guild, channel, body });
-        return `Sound-off played in voice and posted in ${channelName(channel)}.`;
+        await postSoundOffTranscript(channel, body);
+        try {
+            await playAudio(ctx.guild.id, audioPath);
+        } catch (err) {
+            throw fail(
+                `Transcript posted in ${channel.name}, but voice playback failed: ${err?.message || err}`
+            );
+        }
+        return `Sounded off in ${channel.name}. Transcript posted in that voice channel.`;
     },
 
     async ytfeed_list(ctx) {

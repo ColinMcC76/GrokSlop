@@ -1,9 +1,11 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const {
-    runEquipmentCheck,
     canRunEquipmentCheck,
     generateBody,
+    connectedVoiceChannel,
+    postSoundOffTranscript,
 } = require('../services/equipmentCheck');
+const { soundOffPayloads } = require('../utils/soundOffTranscript');
 const { getConnectionData, playAudio } = require('../services/voiceManager');
 const { generateSpeech } = require('../services/tts');
 const { equipmentCheckTtsInstructions } = require('../ai/persona');
@@ -13,7 +15,7 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('equipmentchecksoundoff')
         .setDescription(
-            'Equipment check in voice (TTS) plus channel post — ping EMA roles, ✅ reactions, equipped role'
+            'Speak an equipment check in voice and post the transcript in that voice channel'
         )
         .addStringOption((option) =>
             option
@@ -56,24 +58,60 @@ module.exports = {
         const prompt = interaction.options.getString('prompt');
 
         await interaction.deferReply({
-            allowedMentions: { parse: ['roles'] },
+            allowedMentions: { parse: [] },
         });
 
+        let transcriptPosted = false;
         try {
+            const voiceChannel = await connectedVoiceChannel(interaction.guild);
+            if (!voiceChannel?.isVoiceBased?.() || typeof voiceChannel.send !== 'function') {
+                await interaction.editReply({
+                    content: 'I need to be in a voice channel with text chat before sounding off.',
+                    allowedMentions: { parse: [] },
+                });
+                return;
+            }
+
             const body = await generateBody(interaction.guild.id, prompt);
+            const payloads = soundOffPayloads(body);
 
             const audioPath = await generateSpeech(body, {
                 instructions: equipmentCheckTtsInstructions,
             });
-            await playAudio(interaction.guild.id, audioPath);
 
-            await runEquipmentCheck(interaction, prompt, { body });
+            if (interaction.channelId === voiceChannel.id) {
+                await interaction.editReply(payloads[0]);
+                for (const payload of payloads.slice(1)) {
+                    await voiceChannel.send(payload);
+                }
+            } else {
+                await postSoundOffTranscript(voiceChannel, body);
+                await interaction.editReply({
+                    content: `Sounded off in **${voiceChannel.name}**. The transcript is in that voice channel.`,
+                    allowedMentions: { parse: [] },
+                });
+            }
+            transcriptPosted = true;
+
+            await playAudio(interaction.guild.id, audioPath);
         } catch (err) {
             const msg = err?.message || String(err);
+            const content = transcriptPosted
+                ? `The transcript was posted, but voice playback failed: ${msg}`
+                : `Could not run equipment check sound-off: ${msg}`;
             try {
-                await interaction.editReply({
-                    content: `Could not run equipment check sound-off: ${msg}`,
-                });
+                if (transcriptPosted) {
+                    await interaction.followUp({
+                        content,
+                        allowedMentions: { parse: [] },
+                        flags: MessageFlags.Ephemeral,
+                    });
+                } else {
+                    await interaction.editReply({
+                        content,
+                        allowedMentions: { parse: [] },
+                    });
+                }
             } catch {
                 await interaction.followUp({
                     content: msg,

@@ -1,6 +1,8 @@
 const { generateResponse } = require('../ai/router');
 const persona = require('../ai/persona');
 const { getActivePromptText } = require('../ai/guildPersonas');
+const { getConnectionData } = require('./voiceManager');
+const { soundOffPayloads } = require('../utils/soundOffTranscript');
 
 /** Role names pinged on each equipment check (exact match). Override: EQUIPMENT_CHECK_PING_ROLES=comma-separated */
 const DEFAULT_PING_ROLE_NAMES = [
@@ -176,6 +178,37 @@ async function generateBody(guildId, optionalPrompt) {
             ? result
             : (result && result.text) || 'Equipment check — sound off when ready.';
     return text.trim();
+}
+
+/**
+ * Voice channel the bot is already in. Its built-in chat is the sound-off transcript destination.
+ * @param {import('discord.js').Guild} guild
+ */
+async function connectedVoiceChannel(guild) {
+    const data = getConnectionData(guild?.id);
+    const channelId = data?.connection?.joinConfig?.channelId;
+    if (!channelId) {
+        return null;
+    }
+    return (
+        guild.channels.cache.get(channelId) ||
+        (await guild.channels.fetch(channelId).catch(() => null))
+    );
+}
+
+/**
+ * Post the spoken equipment-check transcript in a voice channel's text chat.
+ * @param {import('discord.js').TextBasedChannel} channel
+ * @param {string} body
+ */
+async function postSoundOffTranscript(channel, body) {
+    if (!channel || typeof channel.send !== 'function') {
+        throw new Error('That voice channel has no text chat to post the transcript in.');
+    }
+    const payloads = soundOffPayloads(body);
+    for (const payload of payloads) {
+        await channel.send(payload);
+    }
 }
 
 /**
@@ -400,6 +433,8 @@ module.exports = {
     runEquipmentCheck,
     canRunEquipmentCheck,
     generateBody,
+    connectedVoiceChannel,
+    postSoundOffTranscript,
     REACTION_EMOJI,
     CHECK_DURATION_MS,
 };
