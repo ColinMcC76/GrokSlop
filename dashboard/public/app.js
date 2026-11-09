@@ -11,10 +11,9 @@ const taglineEl = $('tagline');
 const volumeInput = $('volume');
 const volumeLabel = $('volumeLabel');
 const logEl = $('log');
+const signIn = $('signIn');
+const adminLink = $('adminLink');
 const signOut = $('signOut');
-const accessPanel = $('accessPanel');
-const accessPending = $('accessPending');
-const accessApproved = $('accessApproved');
 
 let latest = null;
 let busy = false;
@@ -135,80 +134,11 @@ async function ensureAllowed(response) {
     return data;
 }
 
-function renderPeople(container, people, actions, emptyText) {
-    container.replaceChildren();
-    if (!people.length) {
-        const empty = document.createElement('p');
-        empty.className = 'hint';
-        empty.textContent = emptyText;
-        container.appendChild(empty);
-        return;
-    }
-    for (const person of people) {
-        const row = document.createElement('div');
-        row.className = 'row person';
-        const name = document.createElement('span');
-        const shown = person.globalName && person.globalName !== person.username
-            ? `${person.globalName} (@${person.username})`
-            : (person.globalName || person.username || person.id);
-        name.textContent = shown;
-        row.appendChild(name);
-        for (const action of actions) {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.textContent = action.label;
-            if (action.quiet) {
-                button.className = 'quiet';
-            }
-            button.addEventListener('click', () => changeAccess(action.op, person.id, button));
-            row.appendChild(button);
-        }
-        container.appendChild(row);
-    }
-}
-
-function paintAccess() {
-    signOut.hidden = !latest?.viewer;
-    const owner = Boolean(latest?.viewer?.owner && latest.access);
-    accessPanel.hidden = !owner;
-    if (!owner) {
-        return;
-    }
-    renderPeople(
-        accessPending,
-        latest.access.pending || [],
-        [
-            { op: 'approve', label: 'Approve' },
-            { op: 'deny', label: 'Deny', quiet: true },
-        ],
-        'Nobody is waiting.'
-    );
-    renderPeople(
-        accessApproved,
-        latest.access.approved || [],
-        [{ op: 'remove', label: 'Remove', quiet: true }],
-        'Nobody else is approved.'
-    );
-}
-
-async function changeAccess(op, id, button) {
-    button.disabled = true;
-    try {
-        const response = await fetch('/api/access', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ op, id }),
-        });
-        const data = await ensureAllowed(response);
-        if (!data) {
-            return;
-        }
-        setResult(data.message || (data.ok ? 'Done.' : 'Failed.'), data.ok ? 'ok' : 'err');
-        await refresh();
-    } catch (err) {
-        setResult(err.message || String(err), 'err');
-        button.disabled = false;
-    }
+function paintViewer() {
+    const signedIn = Boolean(latest?.viewer);
+    signIn.hidden = signedIn || latest?.auth !== 'discord';
+    adminLink.hidden = !latest?.viewer?.owner;
+    signOut.hidden = !signedIn;
 }
 
 async function refresh() {
@@ -221,7 +151,7 @@ async function refresh() {
         latest = data;
         paintSelectors();
         paintSituation();
-        paintAccess();
+        paintViewer();
     } catch (err) {
         situationEl.textContent = `Status unavailable: ${err.message || err}`;
     }

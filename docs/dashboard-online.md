@@ -36,7 +36,7 @@ Restart the bot after saving `.env`. The local window asks you to sign in with D
 
 ## 2. Approve friends
 
-On the panel, the Access card lists people who signed in and are waiting. Approve lets them control the bot. Remove cuts them off on their next click. The list is stored in `data/dashboard-access.json`. That folder is gitignored.
+Open **Access** on the panel, or go to `https://whorezone.party/admin`. That page lists people who signed in and are waiting. Approve lets them control the bot. Remove cuts them off on their next click. The list is stored in `data/dashboard-access.json`. That folder is gitignored.
 
 ## 3. Cloudflare Tunnel
 

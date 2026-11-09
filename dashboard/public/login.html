@@ -18,6 +18,7 @@
         const notices = {
             denied: 'Discord sign-in was cancelled.',
             failed: 'Discord sign-in did not finish. Try again.',
+            setup: 'Sign-in is not ready on the bot yet. Set DISCORD_CLIENT_SECRET, DASHBOARD_OWNER_ID, and DASHBOARD_SESSION_SECRET in .env, then restart GrokSlop.',
         };
         const notice = notices[new URLSearchParams(location.search).get('error')];
         if (notice) {

@@ -18,7 +18,11 @@
         <p id="tagline" class="tagline">Starting…</p>
         <div class="presence-wrap">
             <div id="presence" class="presence offline">Offline</div>
-            <a id="signOut" class="sign-out" href="/logout" hidden>Sign out</a>
+            <div class="header-links">
+                <a id="signIn" class="sign-out" href="/login" hidden>Sign in</a>
+                <a id="adminLink" class="sign-out" href="/admin" hidden>Access</a>
+                <a id="signOut" class="sign-out" href="/logout" hidden>Sign out</a>
+            </div>
         </div>
         <div class="selectors">
             <label>Server
@@ -40,15 +44,6 @@
     <pre id="result" class="result" aria-live="polite">Ready.</pre>
 
     <main class="board">
-        <section id="accessPanel" hidden>
-            <h2>Access</h2>
-            <p class="hint">Friends sign in with Discord and wait here until you approve them. Removing someone cuts them off on their next click.</p>
-            <h3>Waiting</h3>
-            <div id="accessPending"></div>
-            <h3>Approved</h3>
-            <div id="accessApproved"></div>
-        </section>
-
         <section>
             <h2>Voice</h2>
             <div class="row">

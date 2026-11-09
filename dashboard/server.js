@@ -458,6 +458,10 @@ function startDashboard(client) {
                 sendFile(res, { file: 'waiting.html', type: 'text/html; charset=utf-8' });
                 return;
             }
+            if (gate.page === 'admin') {
+                sendFile(res, { file: 'admin.html', type: 'text/html; charset=utf-8' });
+                return;
+            }
 
             if (req.method === 'GET' && PUBLIC_FILES[pathname]) {
                 sendFile(res, PUBLIC_FILES[pathname]);
@@ -466,6 +470,7 @@ function startDashboard(client) {
 
             if (req.method === 'GET' && pathname === '/api/status') {
                 const status = buildStatus(client);
+                status.auth = auth.isConfigured() ? 'discord' : 'off';
                 if (gate.viewer) {
                     status.viewer = gate.viewer;
                     if (gate.viewer.owner) {
