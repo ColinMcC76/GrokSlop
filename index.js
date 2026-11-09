@@ -1,55 +1,62 @@
 require('dotenv').config();
 
-const fs = require('node:fs');
-const path = require('node:path');
-const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
-const { initErrorLog } = require('./utils/errorLog');
-const { startDashboard } = require('./dashboard/server');
-
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMembers
-    ],
-    partials: [Partials.Channel]
-});
-
-client.commands = new Collection();
-
-const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.existsSync(commandsPath)
-    ? fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'))
-    : [];
-
-for (const file of commandFiles) {
-    const filePath = path.join(commandsPath, file);
-    const command = require(filePath);
-    if ('data' in command && 'execute' in command) {
-        client.commands.set(command.data.name, command);
-    }
+const { raiseHttpHeaderLimit } = require('./utils/raiseHttpHeaderLimit');
+if (!raiseHttpHeaderLimit()) {
+    startBot();
 }
 
-const eventsPath = path.join(__dirname, 'events');
-const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
+function startBot() {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
+    const { initErrorLog } = require('./utils/errorLog');
+    const { startDashboard } = require('./dashboard/server');
 
-for (const file of eventFiles) {
-    const filePath = path.join(eventsPath, file);
-    const event = require(filePath);
+    const client = new Client({
+        intents: [
+            GatewayIntentBits.Guilds,
+            GatewayIntentBits.GuildMessages,
+            GatewayIntentBits.GuildMessageReactions,
+            GatewayIntentBits.MessageContent,
+            GatewayIntentBits.GuildVoiceStates,
+            GatewayIntentBits.GuildMembers
+        ],
+        partials: [Partials.Channel]
+    });
 
-    if (event.once) {
-        client.once(event.name, (...args) => event.execute(...args));
-    } else {
-        client.on(event.name, (...args) => event.execute(...args));
+    client.commands = new Collection();
+
+    const commandsPath = path.join(__dirname, 'commands');
+    const commandFiles = fs.existsSync(commandsPath)
+        ? fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'))
+        : [];
+
+    for (const file of commandFiles) {
+        const filePath = path.join(commandsPath, file);
+        const command = require(filePath);
+        if ('data' in command && 'execute' in command) {
+            client.commands.set(command.data.name, command);
+        }
     }
+
+    const eventsPath = path.join(__dirname, 'events');
+    const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
+
+    for (const file of eventFiles) {
+        const filePath = path.join(eventsPath, file);
+        const event = require(filePath);
+
+        if (event.once) {
+            client.once(event.name, (...args) => event.execute(...args));
+        } else {
+            client.on(event.name, (...args) => event.execute(...args));
+        }
+    }
+
+    startDashboard(client);
+    initErrorLog(client);
+
+    client.login(process.env.TOKEN).catch((err) => {
+        console.error('[login] GrokSlop could not log in:', err?.message || err);
+    });
 }
-
-startDashboard(client);
-initErrorLog(client);
-
-client.login(process.env.TOKEN).catch((err) => {
-    console.error('[login] GrokSlop could not log in:', err?.message || err);
-});

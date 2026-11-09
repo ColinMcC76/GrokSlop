@@ -8,6 +8,15 @@ const {
     getQueueSnapshot,
     setYoutubeVolume,
     getYoutubeVolume,
+    pausePlayback,
+    resumePlayback,
+    seekPlayback,
+    seekBy,
+    stopPlayback,
+    previousTrack,
+    moveQueueItem,
+    removeUpcoming,
+    SEEK_STEP_MS,
 } = require('../services/youtubeQueue');
 const {
     startRealtimeForGuild,
@@ -349,6 +358,76 @@ const handlers = {
             throw fail('Nothing is playing or queued.');
         }
         return 'Skipped.';
+    },
+
+    async queue_pause(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        pausePlayback(ctx.guild.id);
+        return 'Paused.';
+    },
+
+    async queue_play(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        resumePlayback(ctx.guild.id);
+        return 'Playing.';
+    },
+
+    async queue_stop(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        stopPlayback(ctx.guild.id);
+        return 'Stopped.';
+    },
+
+    async queue_previous(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        return previousTrack(ctx.guild.id);
+    },
+
+    async queue_back(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        seekBy(ctx.guild.id, -SEEK_STEP_MS);
+        return 'Rewound 10 seconds.';
+    },
+
+    async queue_forward(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        seekBy(ctx.guild.id, SEEK_STEP_MS);
+        return 'Jumped ahead 10 seconds.';
+    },
+
+    async queue_seek(ctx) {
+        if (!getConnectionData(ctx.guild.id)) {
+            throw fail('I am not in a voice channel.');
+        }
+        const positionMs = Number(ctx.body.positionMs);
+        if (!Number.isFinite(positionMs) || positionMs < 0) {
+            throw fail('Pick a spot in the song.');
+        }
+        seekPlayback(ctx.guild.id, positionMs);
+        return 'Moved to that spot in the song.';
+    },
+
+    async queue_remove(ctx) {
+        const index = Number(ctx.body.index);
+        removeUpcoming(ctx.guild.id, index);
+        return 'Removed from the queue.';
+    },
+
+    async queue_reorder(ctx) {
+        moveQueueItem(ctx.guild.id, ctx.body.fromIndex, ctx.body.toIndex);
+        return 'Queue order updated.';
     },
 
     async stop(ctx) {

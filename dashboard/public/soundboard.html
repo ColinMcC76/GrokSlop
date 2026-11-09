@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GrokSlop</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="tabs" aria-label="GrokSlop">
+        <span class="tabs-mark">GrokSlop</span>
+        <a href="/">Controls</a>
+        <a href="/queue">Queue</a>
+        <a href="/soundboard" aria-current="page">Soundboard</a>
+    </nav>
+    <header class="top">
+        <p id="tagline" class="tagline">Soundboard</p>
+        <div id="presence" class="presence offline">Offline</div>
+        <div class="selectors">
+            <label>Server
+                <select id="guild"></select>
+            </label>
+            <label>Voice channel
+                <select id="voiceChannel"></select>
+            </label>
+        </div>
+    </header>
+
+    <p id="situation" class="situation">Pick a server. Play joins the selected voice channel if he is not already in one.</p>
+    <pre id="result" class="result" aria-live="polite">Ready.</pre>
+
+    <main class="sound-main">
+        <section class="composer">
+            <h2>New soundbite</h2>
+            <div class="composer-row">
+                <label>Name
+                    <input id="newName" type="text" maxlength="48" placeholder="Airhorn">
+                </label>
+                <label>Audio files
+                    <input id="newFile" type="file" multiple accept=".mp3,.wav,.ogg,.webm,.m4a,.flac,.aac,audio/*">
+                </label>
+                <button type="button" id="create">Add</button>
+            </div>
+            <p id="fileHint" class="hint">One file uses the name above. Several files are named from each file.</p>
+            <div class="stop-row">
+                <button type="button" id="stop" class="danger">Stop</button>
+                <p class="hint">Stops the soundbite that is playing in voice.</p>
+            </div>
+            <p class="hint">In Discord, <code>/soundboard play</code> plays one of these in voice. <code>/soundboard list</code> shows the names, and <code>/soundboard stop</code> cuts it off.</p>
+        </section>
+        <div id="grid" class="bite-grid"></div>
+    </main>
+
+    <script src="/selectors.js"></script>
+    <script src="/soundboard.js"></script>
+</body>
+</html>

@@ -18,12 +18,62 @@ const DISCORD_MSG_MAX = 1900;
 const PREFIX_ASSISTANT = '\u{1F916} **Shabbot:** ';
 const PREFIX_USER = '\u{1F5E3}\uFE0F **You said:** ';
 
-/** Min RMS (int16 mono) on first ~100ms of audio before we cancel assistant playback (VAD false positives / quiet noise). */
+/** Solo barge-in: min RMS on a short window before cancelling playback. */
 const INTERRUPT_CONFIRM_RMS = Number(process.env.RT_INTERRUPT_MIN_RMS) || 450;
+/**
+ * Group mics pick up bleed and half-words. Require louder, steadier overlap
+ * before cancelling the reply. Override: RT_INTERRUPT_MIN_RMS_GROUP.
+ */
+const INTERRUPT_CONFIRM_RMS_GROUP = Number(process.env.RT_INTERRUPT_MIN_RMS_GROUP) || 1800;
 /** Skip committing a finished segment that is this quiet (silence / room tone). */
 const COMMIT_MIN_RMS = Number(process.env.RT_COMMIT_MIN_RMS) || 380;
-/** 24kHz mono s16le bytes — ~100ms — used to measure speech energy before interrupting playback. */
-const INTERRUPT_CONFIRM_BYTES = 4800;
+/** 24kHz mono s16le. Solo still confirms on ~100ms. */
+const INTERRUPT_CONFIRM_MS = Number(process.env.RT_INTERRUPT_CONFIRM_MS) || 100;
+/** Group waits ~450ms of sustained speech so a partial blip cannot cut the reply off. */
+const INTERRUPT_CONFIRM_MS_GROUP = Number(process.env.RT_INTERRUPT_CONFIRM_MS_GROUP) || 450;
+/** 50ms frames inside the confirm window. Most of them must clear the RMS floor. */
+const INTERRUPT_FRAME_BYTES = 2400;
+const INTERRUPT_FRAME_HIT_RATIO = 0.75;
+
+function confirmBytesFromMs(ms) {
+    const safeMs = Number.isFinite(ms) && ms > 0 ? ms : 100;
+    return Math.max(INTERRUPT_FRAME_BYTES, Math.round(24000 * 2 * (safeMs / 1000)));
+}
+
+/**
+ * A burst counts as an interrupt only when the whole window is present and
+ * loud, and most 50ms slices inside it stay above the floor. A short spike
+ * or a segment that ends early does not.
+ * @param {Buffer} buf
+ * @param {number} minRms
+ * @param {number} needBytes
+ */
+function interruptEnergyOk(buf, minRms, needBytes) {
+    if (!buf || buf.length < needBytes) {
+        return {
+            ok: false,
+            rms: buf && buf.length >= 2 ? pcmMonoInt16Rms(buf) : 0,
+            hotRatio: 0,
+        };
+    }
+    const window = buf.subarray(0, needBytes);
+    const rms = pcmMonoInt16Rms(window);
+    let frames = 0;
+    let hot = 0;
+    for (let i = 0; i + INTERRUPT_FRAME_BYTES <= window.length; i += INTERRUPT_FRAME_BYTES) {
+        frames += 1;
+        if (pcmMonoInt16Rms(window.subarray(i, i + INTERRUPT_FRAME_BYTES)) >= minRms) {
+            hot += 1;
+        }
+    }
+    const hotRatio = frames ? hot / frames : 0;
+    return {
+        ok: rms >= minRms && hotRatio >= INTERRUPT_FRAME_HIT_RATIO,
+        rms,
+        hotRatio,
+    };
+}
+
 /** Wait this long for STT before assuming the segment was silence. */
 const TRANSCRIPT_WAIT_MS = Number(process.env.RT_TRANSCRIPT_WAIT_MS) || 2500;
 
@@ -483,6 +533,12 @@ async function startRealtimeForGuild({
         let energySamples = 0;
         let interruptConfirmed = !mustConfirmSpeech;
         let preInterruptBuffer = Buffer.alloc(0);
+        const interruptLimit = {
+            bytes: confirmBytesFromMs(
+                isGroupListen ? INTERRUPT_CONFIRM_MS_GROUP : INTERRUPT_CONFIRM_MS
+            ),
+            minRms: isGroupListen ? INTERRUPT_CONFIRM_RMS_GROUP : INTERRUPT_CONFIRM_RMS,
+        };
 
         function accumulateEnergy(buf) {
             if (!buf || buf.length < 2) return;
@@ -499,17 +555,28 @@ async function startRealtimeForGuild({
             return energySamples ? Math.sqrt(energySumSq / energySamples) : 0;
         }
 
-        function abortQuietSegment(reason) {
-            captureByUser.delete(speakingUserId);
-            try {
-                opusStream.destroy();
-            } catch {}
-            try {
-                decoder.destroy();
-            } catch {}
-            if (reason) {
-                console.log('[RT]', reason);
-            }
+        function describeVerdict(verdict) {
+            return (
+                `rms=${verdict.rms.toFixed(0)} hot=${Math.round(verdict.hotRatio * 100)}% ` +
+                `need rms>=${interruptLimit.minRms} across ${interruptLimit.bytes} bytes`
+            );
+        }
+
+        function acceptInterrupt(pcm) {
+            interruptConfirmed = true;
+            const verdict = interruptEnergyOk(pcm, interruptLimit.minRms, interruptLimit.bytes);
+            console.log(
+                '[RT] user speech confirmed during playback; stopping assistant audio (' +
+                    describeVerdict(verdict) +
+                    ')'
+            );
+            rt.cancelResponse();
+            flushLocalPlaybackOnly();
+            responseInProgress = false;
+            appendedBytes = pcm.length;
+            accumulateEnergy(pcm);
+            rt.appendAudio(pcm.toString('base64'));
+            preInterruptBuffer = Buffer.alloc(0);
         }
 
         decoder.on('data', (chunk) => {
@@ -517,31 +584,22 @@ async function startRealtimeForGuild({
 
             if (!interruptConfirmed) {
                 preInterruptBuffer = Buffer.concat([preInterruptBuffer, pcm24kMono]);
-                if (preInterruptBuffer.length < INTERRUPT_CONFIRM_BYTES) {
+                if (preInterruptBuffer.length < interruptLimit.bytes) {
                     return;
                 }
-                const head = preInterruptBuffer.subarray(0, INTERRUPT_CONFIRM_BYTES);
-                const rms = pcmMonoInt16Rms(head);
-                if (rms < INTERRUPT_CONFIRM_RMS) {
-                    abortQuietSegment(
-                        `playback interrupt ignored (low energy, rms=${rms.toFixed(0)} < ${INTERRUPT_CONFIRM_RMS})`
-                    );
-                    return;
-                }
-                interruptConfirmed = true;
-                console.log(
-                    '[RT] user speech confirmed during playback; stopping assistant audio (rms=' +
-                        rms.toFixed(0) +
-                        ')'
+                const tail = preInterruptBuffer.subarray(
+                    preInterruptBuffer.length - interruptLimit.bytes
                 );
-                rt.cancelResponse();
-                flushLocalPlaybackOnly();
-                responseInProgress = false;
-
-                appendedBytes = preInterruptBuffer.length;
-                accumulateEnergy(preInterruptBuffer);
-                rt.appendAudio(preInterruptBuffer.toString('base64'));
-                preInterruptBuffer = Buffer.alloc(0);
+                const verdict = interruptEnergyOk(
+                    tail,
+                    interruptLimit.minRms,
+                    interruptLimit.bytes
+                );
+                if (!verdict.ok) {
+                    preInterruptBuffer = Buffer.from(tail);
+                    return;
+                }
+                acceptInterrupt(Buffer.from(tail));
                 return;
             }
 
@@ -554,26 +612,28 @@ async function startRealtimeForGuild({
             captureByUser.delete(speakingUserId);
 
             if (!interruptConfirmed) {
-                if (preInterruptBuffer.length > 0) {
-                    const rms = pcmMonoInt16Rms(preInterruptBuffer);
-                    if (rms < INTERRUPT_CONFIRM_RMS) {
-                        console.log(
-                            '[RT] playback interrupt ignored (segment ended before confirm, rms=' +
-                                rms.toFixed(0) +
-                                ')'
-                        );
-                        return;
-                    }
-                    interruptConfirmed = true;
-                    rt.cancelResponse();
-                    flushLocalPlaybackOnly();
-                    responseInProgress = false;
-                    appendedBytes = preInterruptBuffer.length;
-                    accumulateEnergy(preInterruptBuffer);
-                    rt.appendAudio(preInterruptBuffer.toString('base64'));
-                } else {
+                const tail =
+                    preInterruptBuffer.length > interruptLimit.bytes
+                        ? preInterruptBuffer.subarray(
+                              preInterruptBuffer.length - interruptLimit.bytes
+                          )
+                        : preInterruptBuffer;
+                const verdict = interruptEnergyOk(
+                    tail,
+                    interruptLimit.minRms,
+                    interruptLimit.bytes
+                );
+                if (!verdict.ok) {
+                    console.log(
+                        '[RT] playback interrupt ignored (segment ended before a sustained overlap, bytes=' +
+                            preInterruptBuffer.length +
+                            ' ' +
+                            describeVerdict(verdict) +
+                            ')'
+                    );
                     return;
                 }
+                acceptInterrupt(Buffer.from(tail));
             }
 
             const minBytesFor100ms = 4800;

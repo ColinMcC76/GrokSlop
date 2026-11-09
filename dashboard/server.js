@@ -13,8 +13,19 @@ const PUBLIC_FILES = {
     '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
     '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+    '/selectors.js': { file: 'selectors.js', type: 'text/javascript; charset=utf-8' },
     '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
+    '/soundboard': { file: 'soundboard.html', type: 'text/html; charset=utf-8' },
+    '/soundboard.html': { file: 'soundboard.html', type: 'text/html; charset=utf-8' },
+    '/soundboard.js': { file: 'soundboard.js', type: 'text/javascript; charset=utf-8' },
+    '/queue': { file: 'queue.html', type: 'text/html; charset=utf-8' },
+    '/queue.html': { file: 'queue.html', type: 'text/html; charset=utf-8' },
+    '/queue.js': { file: 'queue.js', type: 'text/javascript; charset=utf-8' },
 };
+
+const SOUND_ID =
+    /^\/api\/soundbites\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\/play|\/audio)?$/i;
+const MAX_SOUND_BYTES = 12 * 1024 * 1024;
 
 const MAX_LOG_LINES = 400;
 const MAX_BODY_BYTES = 100_000;
@@ -123,6 +134,37 @@ function sendFile(res, spec) {
 /**
  * @param {import('node:http').IncomingMessage} req
  */
+function headerValue(req, name) {
+    const raw = req.headers[name];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (!value) return '';
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
+}
+
+function readRaw(req, maxBytes) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let size = 0;
+        req.on('data', (chunk) => {
+            size += chunk.length;
+            if (size > maxBytes) {
+                const err = new Error('That file is too large (max 12 MB).');
+                err.statusCode = 413;
+                reject(err);
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+    });
+}
+
 function readBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
@@ -467,6 +509,104 @@ function startDashboard(client) {
                 const result = accessStore.change(body.op, body.id, gate.viewer.id);
                 sendJson(res, result.status, { ok: result.ok, message: result.message });
                 return;
+            }
+
+            if (req.method === 'GET' && pathname === '/api/queue') {
+                if (!clientReady(client)) {
+                    sendJson(res, 503, {
+                        ok: false,
+                        message: 'GrokSlop is not online yet.',
+                    });
+                    return;
+                }
+                const { getQueueView } = require('../services/youtubeQueue');
+                const guildId = url.searchParams.get('guildId') || '';
+                sendJson(res, 200, {
+                    ok: true,
+                    ...(guildId ? getQueueView(guildId) : {
+                        status: 'idle',
+                        positionMs: 0,
+                        durationMs: null,
+                        current: null,
+                        upcoming: [],
+                        total: 0,
+                        volume: 100,
+                        canPrevious: false,
+                    }),
+                });
+                return;
+            }
+
+            if (pathname === '/api/soundbites' && req.method === 'GET') {
+                const { listSoundbites, getSoundbitePlayback } = require('../services/soundboard');
+                sendJson(res, 200, {
+                    ok: true,
+                    soundbites: listSoundbites(),
+                    playing: getSoundbitePlayback(),
+                });
+                return;
+            }
+
+            if (req.method === 'POST' && pathname === '/api/soundbites/stop') {
+                const { stopSoundbite } = require('../services/soundboard');
+                sendJson(res, 200, { ok: true, message: stopSoundbite() });
+                return;
+            }
+
+            if (pathname === '/api/soundbites' && req.method === 'POST') {
+                const { createSoundbite } = require('../services/soundboard');
+                const buffer = await readRaw(req, MAX_SOUND_BYTES);
+                const soundbite = createSoundbite(
+                    headerValue(req, 'x-soundbite-name'),
+                    headerValue(req, 'x-soundbite-filename'),
+                    buffer
+                );
+                sendJson(res, 201, { ok: true, soundbite });
+                return;
+            }
+
+            const soundMatch = pathname.match(SOUND_ID);
+            if (soundMatch) {
+                const id = soundMatch[1];
+                const tail = soundMatch[2] || '';
+                const board = require('../services/soundboard');
+                if (req.method === 'DELETE' && !tail) {
+                    board.deleteSoundbite(id);
+                    sendJson(res, 200, { ok: true, message: 'Deleted.' });
+                    return;
+                }
+                if (req.method === 'PATCH' && !tail) {
+                    const body = await readBody(req);
+                    const soundbite = board.updateSoundbite(id, { name: body.name });
+                    sendJson(res, 200, { ok: true, soundbite });
+                    return;
+                }
+                if (req.method === 'PUT' && tail === '/audio') {
+                    const buffer = await readRaw(req, MAX_SOUND_BYTES);
+                    const soundbite = board.updateSoundbite(id, {
+                        filename: headerValue(req, 'x-soundbite-filename'),
+                        buffer,
+                    });
+                    sendJson(res, 200, { ok: true, soundbite });
+                    return;
+                }
+                if (req.method === 'POST' && tail === '/play') {
+                    const body = await readBody(req);
+                    if (!clientReady(client)) {
+                        sendJson(res, 503, {
+                            ok: false,
+                            message: 'GrokSlop is not online yet.',
+                        });
+                        return;
+                    }
+                    const message = await board.playSoundbite(client, {
+                        id,
+                        guildId: body.guildId,
+                        voiceChannelId: body.voiceChannelId,
+                    });
+                    sendJson(res, 200, { ok: true, message });
+                    return;
+                }
             }
 
             if (req.method === 'POST' && pathname === '/api/action') {

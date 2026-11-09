@@ -7,12 +7,25 @@ const {
     StreamType,
 } = require('@discordjs/voice');
 const ffmpegStatic = require('ffmpeg-static');
+const {
+    YTDLP_FORMAT_SORT,
+    YTDLP_META_TEMPLATE,
+    m3u8AudioFormat,
+    resolvedAudioFormat,
+    parseYtdlpMetadata,
+    playDlLookupIsBroken,
+    ytdlpLookupTarget,
+    lookupFailure,
+} = require('./youtubeFormats');
 
 /** @type {Map<string, GuildQueueState>} */
 const queues = new Map();
 
 /** @type {string | null} */
 let cachedYtdlpVersion = null;
+
+/** play-dl keeps failing the same way for every video once YouTube breaks it. */
+let playDlLookupBroken = false;
 
 function getPlayDl() {
     try {
@@ -39,7 +52,7 @@ function isPlayDlInstalled() {
 }
 
 /**
- * @typedef {{ url: string, title: string | null, intro?: boolean, introUser?: string }} QueueItem
+ * @typedef {{ url: string, title: string | null, durationMs?: number | null, intro?: boolean, introUser?: string }} QueueItem
  * @typedef {{
  *   items: QueueItem[],
  *   player: import('@discordjs/voice').AudioPlayer,
@@ -49,10 +62,17 @@ function isPlayDlInstalled() {
  *   onPlayerError: (err: Error) => void,
  *   ytdlpChild: import('node:child_process').ChildProcess | null,
  *   volumePercent: number,
+ *   startOffsetMs: number,
+ *   cachedFile: { url: string, filePath: string } | null,
+ *   history: QueueItem[],
+ *   stopped: boolean,
  * }} GuildQueueState
  */
 
 const MAX_PLAYLIST_TRACKS = 25;
+const SEEK_STEP_MS = 10_000;
+const PREVIOUS_RESTART_MS = 3_000;
+const HISTORY_LIMIT = 25;
 const IDLE_WAIT_MS = 3_600_000;
 const MAX_YTDLP_STDERR_BYTES = 128 * 1024;
 const YT_CACHE_DIR = path.join(__dirname, '..', 'data', 'yt-cache');
@@ -236,10 +256,10 @@ async function createYoutubeStream(play, url) {
  */
 
 function defaultYtdlpFormat() {
-    return (
-        process.env.YT_DLP_FORMAT ||
-        'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best/ba/b'
-    );
+    // Original audio first. A plain bestaudio/best plus `-S +abr` picks the
+    // smallest stream, and YouTube auto-dubs (often French) are frequently
+    // that stream even when the video is English.
+    return resolvedAudioFormat(process.env.YT_DLP_FORMAT);
 }
 
 /**
@@ -303,7 +323,7 @@ function getYtdlpProfiles() {
 
     profiles.push({
         name: 'm3u8-ios',
-        format: 'ba[protocol=m3u8_native]/bestaudio[ext=m4a]/bestaudio/best',
+        format: m3u8AudioFormat(),
         extraArgs: ytdlpProfileExtra(
             'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot'
         ),
@@ -327,20 +347,31 @@ function getYtdlpProfiles() {
  * @param {string} url
  * @param {YtdlpProfile} profile
  */
-function buildYtdlpArgs(url, profile) {
-    return [
+function formatYtSection(startMs) {
+    const total = Math.max(0, Math.floor(startMs / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `*${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}-inf`;
+}
+
+function buildYtdlpArgs(url, profile, startMs = 0) {
+    const args = [
         '-f',
         profile.format,
         '-S',
-        '+abr',
+        YTDLP_FORMAT_SORT,
         '-o',
         '-',
         '--no-playlist',
         '--no-progress',
         '--no-warnings',
-        ...profile.extraArgs,
-        url,
     ];
+    if (startMs >= 1000) {
+        args.push('--download-sections', formatYtSection(startMs));
+    }
+    args.push(...profile.extraArgs, url);
+    return args;
 }
 
 function ytdlpStderrError(text) {
@@ -357,9 +388,9 @@ function ytdlpStderrError(text) {
  * @param {YtdlpProfile} profile
  * @returns {Promise<{ stream: import('node:stream').Readable, child: import('node:child_process').ChildProcess }>}
  */
-function streamYoutubeViaYtdlp(url, profile) {
+function streamYoutubeViaYtdlp(url, profile, startMs = 0) {
     const bin = ytdlpBin();
-    const args = buildYtdlpArgs(url, profile);
+    const args = buildYtdlpArgs(url, profile, startMs);
 
     return new Promise((resolve, reject) => {
         const child = spawn(bin, args, {
@@ -480,6 +511,8 @@ async function getYtdlpDirectUrl(url, profile) {
         '-g',
         '-f',
         profile.format,
+        '-S',
+        YTDLP_FORMAT_SORT,
         '--no-playlist',
         '--no-warnings',
         ...profile.extraArgs,
@@ -502,23 +535,29 @@ async function getYtdlpDirectUrl(url, profile) {
 /**
  * @param {string} directUrl
  */
-function streamUrlViaFfmpeg(directUrl) {
+function streamUrlViaFfmpeg(directUrl, startMs = 0) {
     if (!ffmpegStatic) {
         return Promise.reject(new Error('ffmpeg-static is not available'));
     }
+
+    const args = [
+        '-reconnect',
+        '1',
+        '-reconnect_streamed',
+        '1',
+        '-reconnect_delay_max',
+        '5',
+    ];
+    if (startMs >= 1000) {
+        args.push('-ss', (startMs / 1000).toFixed(3));
+    }
+    args.push('-i', directUrl);
 
     return new Promise((resolve, reject) => {
         const child = spawn(
             ffmpegStatic,
             [
-                '-reconnect',
-                '1',
-                '-reconnect_streamed',
-                '1',
-                '-reconnect_delay_max',
-                '5',
-                '-i',
-                directUrl,
+                ...args,
                 '-vn',
                 '-loglevel',
                 'error',
@@ -605,7 +644,7 @@ async function downloadYoutubeViaYtdlp(url, profile) {
         '-f',
         profile.format,
         '-S',
-        '+abr',
+        YTDLP_FORMAT_SORT,
         '-o',
         outTemplate,
         '--no-playlist',
@@ -627,17 +666,67 @@ async function downloadYoutubeViaYtdlp(url, profile) {
 }
 
 /**
+ * A piped yt-dlp download ignores --download-sections for most YouTube
+ * clients and restarts at 0. Seek through a direct URL ffmpeg can range
+ * into, then a full file, before falling back to that pipe.
  * @param {string} url
+ * @param {YtdlpProfile[]} profiles
+ * @param {number} startMs
+ * @param {string[]} errors
  */
-async function streamYoutubeWithFallbacks(url) {
+async function streamSeekableYoutube(url, profiles, startMs, errors) {
+    for (const profile of profiles) {
+        try {
+            const directUrl = await getYtdlpDirectUrl(url, profile);
+            const result = await streamUrlViaFfmpeg(directUrl, startMs);
+            console.log(
+                `[YouTube queue] seeking via ffmpeg (${profile.name}) at ${startMs}ms`
+            );
+            return { ...result, mode: 'ffmpeg-url' };
+        } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`seek ${profile.name}: ${msg}`);
+            console.warn(`[YouTube queue] ffmpeg seek (${profile.name}) failed:`, msg);
+        }
+    }
+
+    for (const profile of profiles) {
+        try {
+            const filePath = await downloadYoutubeViaYtdlp(url, profile);
+            console.log(
+                `[YouTube queue] seeking via downloaded file (${profile.name})`
+            );
+            return { filePath, mode: 'ytdlp-file' };
+        } catch (err) {
+            const msg = err?.message || String(err);
+            errors.push(`seek download ${profile.name}: ${msg}`);
+            console.warn(
+                `[YouTube queue] seek download (${profile.name}) failed:`,
+                msg
+            );
+        }
+    }
+
+    return null;
+}
+
+async function streamYoutubeWithFallbacks(url, options = {}) {
     await logYtdlpVersionOnce();
+    const startMs = Math.max(0, options.startMs || 0);
 
     const profiles = getYtdlpProfiles();
     const errors = [];
 
+    if (startMs >= 1000) {
+        const sought = await streamSeekableYoutube(url, profiles, startMs, errors);
+        if (sought) {
+            return sought;
+        }
+    }
+
     for (const profile of profiles) {
         try {
-            const result = await streamYoutubeViaYtdlp(url, profile);
+            const result = await streamYoutubeViaYtdlp(url, profile, startMs);
             console.log(
                 `[YouTube queue] streaming via yt-dlp pipe (${profile.name})`
             );
@@ -655,7 +744,7 @@ async function streamYoutubeWithFallbacks(url) {
     for (const profile of profiles) {
         try {
             const directUrl = await getYtdlpDirectUrl(url, profile);
-            const result = await streamUrlViaFfmpeg(directUrl);
+            const result = await streamUrlViaFfmpeg(directUrl, startMs);
             console.log(
                 `[YouTube queue] streaming via yt-dlp URL + ffmpeg (${profile.name})`
             );
@@ -723,11 +812,21 @@ function getOrCreateState(guildId, player) {
             onPlayerError,
             ytdlpChild: null,
             volumePercent: 100,
+            startOffsetMs: 0,
+            cachedFile: null,
+            history: [],
+            stopped: false,
         };
         queues.set(guildId, s);
     }
     if (typeof s.volumePercent !== 'number' || Number.isNaN(s.volumePercent)) {
         s.volumePercent = 100;
+    }
+    if (!Array.isArray(s.history)) {
+        s.history = [];
+    }
+    if (typeof s.stopped !== 'boolean') {
+        s.stopped = false;
     }
     s.player = player;
     return s;
@@ -771,34 +870,27 @@ function waitUntilIdle(player, gen, state) {
  * @param {string} query
  * @returns {Promise<QueueItem[]>}
  */
-async function resolveToQueueItems(query) {
+async function resolveWithPlayDl(query) {
     const play = getPlayDl();
-    const q = query.trim();
-    if (!q) {
-        throw new Error('Empty query.');
-    }
+    const validated = await play.validate(query).catch(() => false);
+    const kind = typeof validated === 'string' ? validated : '';
 
-    const normalized = normalizeYouTubeInput(q);
-    const validated = await play.validate(normalized).catch(() => false);
-    const v = typeof validated === 'string' ? validated : '';
-
-    if (v === 'yt_video') {
-        const info = await play.video_basic_info(normalized);
+    if (kind === 'yt_video') {
+        const info = await play.video_basic_info(query);
         const title = info.video_details?.title || 'YouTube';
-        return [{ url: normalized, title }];
+        return [queueItem(query, title, info.video_details?.durationInSec)];
     }
 
-    if (v === 'yt_playlist') {
-        const pl = await play.playlist_info(normalized, { incomplete: true });
+    if (kind === 'yt_playlist') {
+        const pl = await play.playlist_info(query, { incomplete: true });
         await pl.fetch();
         const videos = await pl.all_videos();
-        return videos.slice(0, MAX_PLAYLIST_TRACKS).map((vid) => ({
-            url: vid.url,
-            title: vid.title || 'YouTube',
-        }));
+        return videos.slice(0, MAX_PLAYLIST_TRACKS).map((vid) => {
+            return queueItem(vid.url, vid.title || 'YouTube', vid.durationInSec);
+        });
     }
 
-    const results = await play.search(normalized, {
+    const results = await play.search(query, {
         limit: 1,
         source: { youtube: 'video' },
     });
@@ -806,53 +898,247 @@ async function resolveToQueueItems(query) {
         throw new Error('No YouTube results found.');
     }
     const first = results[0];
-    return [{ url: first.url, title: first.title || q }];
+    return [queueItem(first.url, first.title || query, first.durationInSec)];
 }
 
-async function playCurrentTrack(state) {
+/**
+ * Title lookup that does not go through Node's HTTP parser.
+ * play-dl throws HPE_HEADER_OVERFLOW and "Initial Response Data is undefined"
+ * when YouTube's watch page is too big or no longer matches its scraper.
+ * @param {string} query
+ * @returns {Promise<QueueItem[]>}
+ */
+async function resolveWithYtdlp(query) {
+    const { target, playlist } = ytdlpLookupTarget(query);
+    const args = [
+        '--no-warnings',
+        '--no-progress',
+        '--print',
+        YTDLP_META_TEMPLATE,
+    ];
+    if (playlist) {
+        args.push('--flat-playlist', '--playlist-end', String(MAX_PLAYLIST_TRACKS));
+    } else {
+        args.push('--no-playlist');
+    }
+    const cookieFile = process.env.YT_DLP_COOKIES?.trim();
+    if (cookieFile) {
+        args.push('--cookies', cookieFile);
+    }
+    args.push(...ytdlpBaseExtraArgs(), target);
+
+    const { stdout } = await runYtdlpCollect(args, playlist ? 60_000 : 45_000);
+    const parsed = parseYtdlpMetadata(stdout).slice(
+        0,
+        playlist ? MAX_PLAYLIST_TRACKS : 1
+    );
+    if (!parsed.length) {
+        throw new Error('No YouTube results found.');
+    }
+    return parsed.map((row) =>
+        queueItem(normalizeYouTubeInput(row.url), row.title, row.durationInSec)
+    );
+}
+
+/**
+ * @param {string} query
+ * @returns {Promise<QueueItem[]>}
+ */
+async function resolveToQueueItems(query) {
+    const q = query.trim();
+    if (!q) {
+        throw new Error('Empty query.');
+    }
+
+    const normalized = normalizeYouTubeInput(q);
+    /** @type {unknown} */
+    let playErr = null;
+    if (!playDlLookupBroken && isPlayDlInstalled()) {
+        try {
+            return await resolveWithPlayDl(normalized);
+        } catch (err) {
+            playErr = err;
+            if (playDlLookupIsBroken(err)) {
+                playDlLookupBroken = true;
+                console.warn(
+                    '[YouTube queue] play-dl cannot read YouTube (header overflow or a page it does not understand). Later lookups use yt-dlp.',
+                    err?.message || err
+                );
+            } else {
+                console.warn(
+                    '[YouTube queue] play-dl lookup failed; trying yt-dlp:',
+                    err?.message || err
+                );
+            }
+        }
+    }
+
+    try {
+        return await resolveWithYtdlp(normalized);
+    } catch (ytdlpErr) {
+        throw lookupFailure(playErr, ytdlpErr);
+    }
+}
+
+function queueItem(url, title, durationInSec) {
+    const seconds = Number(durationInSec);
+    return {
+        url,
+        title: title || 'YouTube',
+        durationMs: Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
+    };
+}
+
+function queueFail(message) {
+    const err = new Error(message);
+    err.statusCode = 400;
+    return err;
+}
+
+function discardCachedFile(state) {
+    if (state.cachedFile?.filePath) {
+        deleteTempFile(state.cachedFile.filePath);
+    }
+    state.cachedFile = null;
+}
+
+function currentPositionMs(state) {
+    if (!state || state.items.length === 0) {
+        return 0;
+    }
+    const resource = state.player.state.resource;
+    const played = Number.isFinite(resource?.playbackDuration) ? resource.playbackDuration : 0;
+    return Math.max(0, (state.startOffsetMs || 0) + played);
+}
+
+function playerStatus(state) {
+    const status = state?.player?.state?.status;
+    if (status === AudioPlayerStatus.Playing) {
+        return 'playing';
+    }
+    if (status === AudioPlayerStatus.Buffering) {
+        return 'buffering';
+    }
+    if (status === AudioPlayerStatus.Paused || status === AudioPlayerStatus.AutoPaused) {
+        return 'paused';
+    }
+    return 'idle';
+}
+
+function publicQueueItem(item) {
+    return {
+        title: item.title || 'YouTube',
+        url: item.url || '',
+        durationMs: item.durationMs || null,
+    };
+}
+
+function openFileAt(filePath, startMs) {
+    if (startMs < 1000 || !ffmpegStatic) {
+        return Promise.resolve({
+            resource: createAudioResource(filePath, { inlineVolume: true }),
+            child: null,
+        });
+    }
+    return new Promise((resolve, reject) => {
+        const child = spawn(
+            ffmpegStatic,
+            [
+                '-hide_banner',
+                '-loglevel',
+                'error',
+                '-ss',
+                (startMs / 1000).toFixed(3),
+                '-i',
+                filePath,
+                '-vn',
+                '-f',
+                's16le',
+                '-ar',
+                '48000',
+                '-ac',
+                '2',
+                'pipe:1',
+            ],
+            { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+        );
+        let settled = false;
+        const stderr = [];
+        let timer;
+        const fail = (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try {
+                child.kill('SIGKILL');
+            } catch {}
+            reject(err);
+        };
+        timer = setTimeout(() => {
+            fail(new Error('ffmpeg seek timed out'));
+        }, 20_000);
+        timer.unref?.();
+        const ok = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+                resource: createAudioResource(child.stdout, {
+                    inputType: StreamType.Raw,
+                    inlineVolume: true,
+                }),
+                child,
+            });
+        };
+        child.stderr.on('data', (chunk) => stderr.push(chunk));
+        child.on('error', fail);
+        child.on('close', (code) => {
+            if (!settled && code) {
+                const text = Buffer.concat(stderr).toString('utf8').trim();
+                fail(new Error(text || `ffmpeg exited ${code}`));
+            }
+        });
+        const onReadable = () => {
+            if (child.stdout.readableLength > 0) {
+                child.stdout.off('readable', onReadable);
+                ok();
+            }
+        };
+        child.stdout.on('readable', onReadable);
+    });
+}
+
+function watchChild(state, child) {
+    if (!child) return;
+    state.ytdlpChild = child;
+    child.on('close', () => {
+        if (state.ytdlpChild === child) {
+            state.ytdlpChild = null;
+        }
+    });
+}
+
+async function playCurrentTrack(state, options = {}) {
+    const announce = options.announce !== false;
     const item = state.items[0];
     if (!item) {
         return;
     }
 
     const gen = state.generation;
+    const startMs = Math.max(0, state.startOffsetMs || 0);
     killYtdlpChild(state);
-    let tempFile = null;
 
     try {
-        let resource;
-
-        const streamed = await streamYoutubeWithFallbacks(item.url);
-
-        if (streamed.mode === 'ytdlp-file' && streamed.filePath) {
-            tempFile = streamed.filePath;
-            resource = createAudioResource(tempFile, {
-                inlineVolume: true,
-                metadata: { title: item.title, url: item.url },
-            });
-        } else if (streamed.stream) {
-            if (streamed.child) {
-                state.ytdlpChild = streamed.child;
-                streamed.child.on('close', () => {
-                    if (state.ytdlpChild === streamed.child) {
-                        state.ytdlpChild = null;
-                    }
-                });
-            }
-            resource = createAudioResource(streamed.stream, {
-                inputType: StreamType.Arbitrary,
-                inlineVolume: true,
-                metadata: { title: item.title, url: item.url },
-            });
-        } else {
-            throw new Error('No YouTube stream source available.');
+        const resource = await openTrackResource(state, item, startMs, gen);
+        if (!resource || state.generation !== gen) {
+            return;
         }
 
         applyVolumeToResource(resource, state.volumePercent);
-
         state.player.play(resource);
 
-        if (state.textChannel) {
+        if (announce && state.textChannel) {
             try {
                 if (item.intro) {
                     const who = item.introUser || 'Someone';
@@ -870,21 +1156,16 @@ async function playCurrentTrack(state) {
         await waitUntilIdle(state.player, gen, state);
 
         if (state.generation !== gen) {
-            deleteTempFile(tempFile);
             return;
         }
 
-        killYtdlpChild(state);
-        deleteTempFile(tempFile);
-        state.items.shift();
+        finishTrack(state);
         await playNextFromQueue(state);
     } catch (err) {
         if (state.generation !== gen) {
-            deleteTempFile(tempFile);
             return;
         }
         killYtdlpChild(state);
-        deleteTempFile(tempFile);
         console.error('[YouTube queue] Playback failed:', err);
         if (state.textChannel) {
             try {
@@ -894,8 +1175,96 @@ async function playCurrentTrack(state) {
                 );
             } catch {}
         }
-        state.items.shift();
+        finishTrack(state);
         await playNextFromQueue(state);
+    }
+}
+
+async function openTrackResource(state, item, startMs, gen) {
+    if (state.cachedFile?.url === item.url && fs.existsSync(state.cachedFile.filePath)) {
+        const opened = await openFileAt(state.cachedFile.filePath, startMs);
+        if (state.generation !== gen) {
+            if (opened.child) {
+                try {
+                    opened.child.kill('SIGKILL');
+                } catch {}
+            }
+            return null;
+        }
+        watchChild(state, opened.child);
+        return opened.resource;
+    }
+
+    const streamed = await streamYoutubeWithFallbacks(item.url, { startMs });
+    if (state.generation !== gen) {
+        if (streamed.filePath) {
+            deleteTempFile(streamed.filePath);
+        }
+        if (streamed.child) {
+            try {
+                streamed.child.kill('SIGKILL');
+            } catch {}
+        }
+        return null;
+    }
+
+    if (streamed.mode === 'ytdlp-file' && streamed.filePath) {
+        if (state.cachedFile?.filePath && state.cachedFile.filePath !== streamed.filePath) {
+            deleteTempFile(state.cachedFile.filePath);
+        }
+        state.cachedFile = { url: item.url, filePath: streamed.filePath };
+        if (startMs >= 1000) {
+            const opened = await openFileAt(streamed.filePath, startMs);
+            if (state.generation !== gen) {
+                if (opened.child) {
+                    try {
+                        opened.child.kill('SIGKILL');
+                    } catch {}
+                }
+                return null;
+            }
+            watchChild(state, opened.child);
+            return opened.resource;
+        }
+        return createAudioResource(streamed.filePath, {
+            inlineVolume: true,
+            metadata: { title: item.title, url: item.url },
+        });
+    }
+
+    if (streamed.stream) {
+        watchChild(state, streamed.child);
+        return createAudioResource(streamed.stream, {
+            inputType: streamed.mode === 'ffmpeg-url' ? StreamType.Raw : StreamType.Arbitrary,
+            inlineVolume: true,
+            metadata: { title: item.title, url: item.url },
+        });
+    }
+
+    throw new Error('No YouTube stream source available.');
+}
+
+function pushHistory(state, item) {
+    if (!item) {
+        return;
+    }
+    if (!Array.isArray(state.history)) {
+        state.history = [];
+    }
+    state.history.push(item);
+    if (state.history.length > HISTORY_LIMIT) {
+        state.history.splice(0, state.history.length - HISTORY_LIMIT);
+    }
+}
+
+function finishTrack(state) {
+    const finished = state.items.shift();
+    pushHistory(state, finished);
+    state.startOffsetMs = 0;
+    state.stopped = false;
+    killYtdlpChild(state);
+    if (!state.items[0] || state.cachedFile?.url !== state.items[0].url) {
+        discardCachedFile(state);
     }
 }
 
@@ -935,6 +1304,7 @@ async function enqueue(guildId, player, textChannel, query) {
     state.items.push(...items);
 
     if (wasEmpty && state.player.state.status === AudioPlayerStatus.Idle) {
+        state.stopped = false;
         chainDrain(state, () => playCurrentTrack(state));
     }
 
@@ -973,6 +1343,7 @@ async function enqueueIntro(guildId, player, textChannel, query, meta = {}) {
     track.introUser = meta.displayName || 'Someone';
 
     state.items.unshift(track);
+    state.stopped = false;
 
     if (state.player.state.status !== AudioPlayerStatus.Idle) {
         state.generation += 1;
@@ -1008,6 +1379,7 @@ function enqueueIntroTrack(guildId, player, textChannel, track, meta = {}) {
         introUser: meta.displayName || 'Someone',
     };
     state.items.unshift(item);
+    state.stopped = false;
 
     if (state.player.state.status !== AudioPlayerStatus.Idle) {
         state.generation += 1;
@@ -1023,6 +1395,42 @@ function enqueueIntroTrack(guildId, player, textChannel, track, meta = {}) {
 }
 
 /**
+ * Stop the current YouTube resource without dropping it from the queue,
+ * so a soundbite can use the same voice player. Resolves true when a track
+ * should be started again afterwards.
+ * @param {string} guildId
+ * @returns {Promise<boolean>}
+ */
+function suspendForExternalAudio(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        return Promise.resolve(false);
+    }
+    state.startOffsetMs = heldPositionMs(state);
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.stop(true);
+    } catch {}
+    return state.drainChain.catch(() => {}).then(() => state.items.length > 0);
+}
+
+/**
+ * Restart the current queued track after a soundbite, if one is still queued.
+ * @param {string} guildId
+ */
+function resumeAfterExternalAudio(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        return;
+    }
+    if (state.stopped || state.player.state.status !== AudioPlayerStatus.Idle) {
+        return;
+    }
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+}
+
+/**
  * Start playback if queue has items but player is idle (e.g. after /talkoff).
  */
 function ensurePlaying(guildId) {
@@ -1030,7 +1438,7 @@ function ensurePlaying(guildId) {
     if (!state || state.items.length === 0) {
         return;
     }
-    if (state.player.state.status !== AudioPlayerStatus.Idle) {
+    if (state.stopped || state.player.state.status !== AudioPlayerStatus.Idle) {
         return;
     }
     chainDrain(state, () => playCurrentTrack(state));
@@ -1042,11 +1450,17 @@ function skip(guildId) {
         return false;
     }
     state.generation += 1;
+    state.startOffsetMs = 0;
+    state.stopped = false;
     killYtdlpChild(state);
     try {
         state.player.stop(true);
     } catch {}
-    state.items.shift();
+    const skipped = state.items.shift();
+    pushHistory(state, skipped);
+    if (!state.items[0] || state.cachedFile?.url !== state.items[0].url) {
+        discardCachedFile(state);
+    }
     chainDrain(state, () => playNextFromQueue(state));
     return true;
 }
@@ -1057,8 +1471,12 @@ function stopAndClear(guildId) {
         return false;
     }
     state.generation += 1;
+    state.startOffsetMs = 0;
+    state.stopped = false;
+    state.history = [];
     killYtdlpChild(state);
     state.items.length = 0;
+    discardCachedFile(state);
     try {
         state.player.stop(true);
     } catch {}
@@ -1071,8 +1489,12 @@ function removeGuild(guildId) {
         return;
     }
     state.generation += 1;
+    state.startOffsetMs = 0;
+    state.stopped = false;
+    state.history = [];
     killYtdlpChild(state);
     state.items.length = 0;
+    discardCachedFile(state);
     try {
         state.player.off('error', state.onPlayerError);
     } catch {}
@@ -1137,6 +1559,257 @@ function getYoutubeVolume(guildId) {
     return typeof p === 'number' && !Number.isNaN(p) ? p : 100;
 }
 
+function emptyQueueView(guildId) {
+    const state = guildId ? queues.get(guildId) : null;
+    return {
+        status: 'idle',
+        positionMs: 0,
+        durationMs: null,
+        current: null,
+        upcoming: [],
+        total: 0,
+        volume: guildId ? getYoutubeVolume(guildId) : 100,
+        canPrevious: Boolean(state?.history?.length),
+    };
+}
+
+function getQueueView(guildId) {
+    const state = queues.get(guildId);
+    const snap = getQueueSnapshot(guildId);
+    if (!snap.current) {
+        return emptyQueueView(guildId);
+    }
+    const stopped = Boolean(state?.stopped);
+    const liveStatus = playerStatus(state);
+    // A seek stops the player before the new resource exists. Reporting that
+    // gap as idle/0 snaps the timer back to the start.
+    const status = stopped
+        ? 'stopped'
+        : liveStatus === 'idle' && state.items.length > 0
+            ? 'buffering'
+            : liveStatus;
+    const positionMs = stopped || liveStatus === 'idle'
+        ? Math.max(0, state.startOffsetMs || 0)
+        : currentPositionMs(state);
+    return {
+        status,
+        positionMs,
+        durationMs: snap.current.durationMs || null,
+        current: publicQueueItem(snap.current),
+        upcoming: snap.upcoming.map((item, index) => ({
+            ...publicQueueItem(item),
+            index,
+        })),
+        total: snap.total,
+        volume: getYoutubeVolume(guildId),
+        canPrevious: true,
+    };
+}
+
+function pausePlayback(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        throw queueFail('Nothing is playing or queued.');
+    }
+    if (state.stopped) {
+        return getQueueView(guildId);
+    }
+    const status = playerStatus(state);
+    if (status === 'paused') {
+        return getQueueView(guildId);
+    }
+    if (status !== 'playing') {
+        throw queueFail(
+            status === 'buffering'
+                ? 'The track is still buffering. Try again in a moment.'
+                : 'Nothing is playing.'
+        );
+    }
+    if (!state.player.pause(true)) {
+        throw queueFail('The track is still buffering. Try again in a moment.');
+    }
+    return getQueueView(guildId);
+}
+
+function resumePlayback(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        throw queueFail('Nothing is queued.');
+    }
+    const status = state.stopped ? 'stopped' : playerStatus(state);
+    if (status === 'playing' || status === 'buffering') {
+        return getQueueView(guildId);
+    }
+    if (status === 'paused') {
+        state.stopped = false;
+        if (state.player.state.status === AudioPlayerStatus.Paused) {
+            state.player.unpause();
+        }
+        return getQueueView(guildId);
+    }
+    state.stopped = false;
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+    return getQueueView(guildId);
+}
+
+function seekPlayback(guildId, positionMs) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        throw queueFail('Nothing is playing or queued.');
+    }
+    const duration = state.items[0].durationMs;
+    const target = Math.max(0, Math.round(Number(positionMs) || 0));
+    const here = state.stopped
+        ? Math.max(0, state.startOffsetMs || 0)
+        : currentPositionMs(state);
+    if (Math.abs(target - here) < 400) {
+        return getQueueView(guildId);
+    }
+    if (duration && target >= duration - 400) {
+        skip(guildId);
+        return getQueueView(guildId);
+    }
+    if (state.stopped) {
+        state.startOffsetMs = target;
+        return getQueueView(guildId);
+    }
+    state.startOffsetMs = target;
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.unpause();
+    } catch {}
+    try {
+        state.player.stop(true);
+    } catch {}
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+    return getQueueView(guildId);
+}
+
+function seekBy(guildId, deltaMs) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        throw queueFail('Nothing is playing or queued.');
+    }
+    return seekPlayback(guildId, heldPositionMs(state) + deltaMs);
+}
+
+function stopPlayback(guildId) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length === 0) {
+        throw queueFail('Nothing is playing or queued.');
+    }
+    state.stopped = true;
+    state.startOffsetMs = 0;
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.stop(true);
+    } catch {}
+    return getQueueView(guildId);
+}
+
+function previousTrack(guildId) {
+    const state = queues.get(guildId);
+    if (!state || (state.items.length === 0 && !(state.history && state.history.length))) {
+        throw queueFail('Nothing is queued.');
+    }
+    if (!Array.isArray(state.history)) {
+        state.history = [];
+    }
+    const position = state.items.length ? heldPositionMs(state) : PREVIOUS_RESTART_MS + 1;
+    if (state.items.length > 0 && position > PREVIOUS_RESTART_MS) {
+        seekPlayback(guildId, 0);
+        return 'Back to the start.';
+    }
+    const prev = state.history.length ? state.history.pop() : null;
+    if (!prev) {
+        seekPlayback(guildId, 0);
+        return 'Back to the start.';
+    }
+    state.items.unshift(prev);
+    state.startOffsetMs = 0;
+    if (state.cachedFile && state.cachedFile.url !== prev.url) {
+        discardCachedFile(state);
+    }
+    if (state.stopped) {
+        return 'Previous.';
+    }
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.stop(true);
+    } catch {}
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+    return 'Previous.';
+}
+
+function heldPositionMs(state) {
+    if (state.stopped) {
+        return Math.max(0, state.startOffsetMs || 0);
+    }
+    return currentPositionMs(state);
+}
+
+function moveQueueItem(guildId, fromIndex, toIndex) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length < 2) {
+        throw queueFail('Add another song before changing the order.');
+    }
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+    const count = state.items.length;
+    if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        from < 0 ||
+        to < 0 ||
+        from >= count ||
+        to >= count
+    ) {
+        throw queueFail('That song is not in the queue.');
+    }
+    if (from === to) {
+        return getQueueView(guildId);
+    }
+    const [item] = state.items.splice(from, 1);
+    state.items.splice(to, 0, item);
+    const headChanged = from === 0 || to === 0;
+    if (!headChanged) {
+        return getQueueView(guildId);
+    }
+    state.startOffsetMs = 0;
+    if (state.cachedFile && state.cachedFile.url !== state.items[0]?.url) {
+        discardCachedFile(state);
+    }
+    if (state.stopped) {
+        return getQueueView(guildId);
+    }
+    state.generation += 1;
+    killYtdlpChild(state);
+    try {
+        state.player.unpause();
+    } catch {}
+    try {
+        state.player.stop(true);
+    } catch {}
+    chainDrain(state, () => playCurrentTrack(state, { announce: false }));
+    return getQueueView(guildId);
+}
+
+function removeUpcoming(guildId, index) {
+    const state = queues.get(guildId);
+    if (!state || state.items.length < 2) {
+        throw queueFail('Nothing else is queued.');
+    }
+    const at = Number(index) + 1;
+    if (!Number.isInteger(at) || at < 1 || at >= state.items.length) {
+        throw queueFail('That queued song is not there.');
+    }
+    state.items.splice(at, 1);
+    return getQueueView(guildId);
+}
+
 module.exports = {
     enqueue,
     enqueueIntro,
@@ -1148,7 +1821,19 @@ module.exports = {
     queueLength,
     getQueueSnapshot,
     ensurePlaying,
+    suspendForExternalAudio,
+    resumeAfterExternalAudio,
     isPlayDlInstalled,
     setYoutubeVolume,
     getYoutubeVolume,
+    getQueueView,
+    pausePlayback,
+    resumePlayback,
+    seekPlayback,
+    seekBy,
+    stopPlayback,
+    previousTrack,
+    moveQueueItem,
+    removeUpcoming,
+    SEEK_STEP_MS,
 };
