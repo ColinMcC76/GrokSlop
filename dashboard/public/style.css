@@ -100,8 +100,17 @@ textarea {
     color: var(--text);
 }
 
-#accessPanel {
-    grid-column: 1 / -1;
+.header-links {
+    display: flex;
+    gap: 10px;
+}
+
+.admin-card {
+    width: min(560px, 100%);
+}
+
+.admin-card h3:first-of-type {
+    margin-top: 18px;
 }
 
 h3 {

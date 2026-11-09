@@ -43,13 +43,62 @@ function isOwner(id) {
 /**
  * @param {import('node:http').IncomingMessage} req
  */
-function hostnameOf(req) {
-    const raw = String(req.headers.host || '').split(',')[0].trim();
+function hostFromHeaderValue(value) {
+    const raw = String(value || '').split(',')[0].trim();
+    if (!raw) {
+        return '';
+    }
     if (raw.startsWith('[')) {
         const end = raw.indexOf(']');
         return (end > 0 ? raw.slice(1, end) : raw).toLowerCase();
     }
     return raw.split(':')[0].toLowerCase();
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ */
+function hostnameOf(req) {
+    return hostFromHeaderValue(req.headers.host);
+}
+
+/**
+ * Cloudflare Tunnel reaches this process on loopback, sometimes with a
+ * loopback Host header. Those requests are still the public site.
+ * @param {import('node:http').IncomingMessage} req
+ */
+function isTunnelRequest(req) {
+    const host = hostnameOf(req);
+    if (host && !isLoopbackHost(host)) {
+        return true;
+    }
+    if (req.headers['cf-connecting-ip'] || req.headers['cf-ray'] || req.headers['cf-visitor']) {
+        return true;
+    }
+    const forwarded = hostFromHeaderValue(req.headers['x-forwarded-host']);
+    if (forwarded && !isLoopbackHost(forwarded)) {
+        return true;
+    }
+    const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    return proto === 'https';
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ */
+function requestHostname(req) {
+    const forwarded = hostFromHeaderValue(req.headers['x-forwarded-host']);
+    if (forwarded && !isLoopbackHost(forwarded)) {
+        return forwarded;
+    }
+    const host = hostnameOf(req);
+    if (host && !isLoopbackHost(host)) {
+        return host;
+    }
+    if (isTunnelRequest(req)) {
+        return 'whorezone.party';
+    }
+    return host;
 }
 
 function isLoopbackHost(hostname) {
@@ -66,7 +115,7 @@ function isAllowedHost(hostname) {
  * @param {import('node:http').IncomingMessage} req
  */
 function externalOrigin(req) {
-    const hostname = hostnameOf(req);
+    const hostname = requestHostname(req);
     if (PUBLIC_HOSTS.has(hostname)) {
         return `https://${hostname}`;
     }
@@ -85,7 +134,7 @@ function externalOrigin(req) {
 }
 
 function secureRequest(req) {
-    return PUBLIC_HOSTS.has(hostnameOf(req));
+    return PUBLIC_HOSTS.has(requestHostname(req));
 }
 
 function clientIp(req) {
@@ -248,21 +297,27 @@ function viewerFrom(session) {
  * @param {string} pathname
  */
 function authorizeRequest(req, pathname) {
-    const hostname = hostnameOf(req);
+    const hostname = requestHostname(req);
     const configured = isConfigured();
+    const localOpen = !configured && isLoopbackHost(hostnameOf(req)) && !isTunnelRequest(req);
 
     if (!configured) {
-        if (!isLoopbackHost(hostname)) {
-            return {
-                handled: true,
-                status: 403,
-                text: 'Discord login is not configured. The panel stays on this computer until it is.',
-            };
+        if (localOpen) {
+            if (pathname === '/login' || pathname === '/waiting' || pathname === '/admin') {
+                return { handled: true, status: 302, location: '/' };
+            }
+            return { handled: false, viewer: null };
         }
-        if (pathname === '/login' || pathname === '/waiting') {
-            return { handled: true, status: 302, location: '/' };
+        if (req.method === 'GET' && pathname === '/style.css') {
+            return { handled: false, viewer: null };
         }
-        return { handled: false, viewer: null };
+        if (req.method === 'GET' && (pathname === '/' || pathname === '/login' || pathname === '/index.html')) {
+            return { handled: false, page: 'login' };
+        }
+        if (pathname.startsWith('/api/')) {
+            return { handled: true, status: 401, json: { ok: false, message: 'Sign in required.' } };
+        }
+        return { handled: true, status: 302, location: '/login' };
     }
 
     if (!isAllowedHost(hostname)) {
@@ -356,7 +411,18 @@ function authorizeRequest(req, pathname) {
         return { handled: true, status: 302, location: '/waiting' };
     }
 
-    return { handled: false, viewer: viewerFrom(session) };
+    const viewer = viewerFrom(session);
+    if (pathname === '/admin') {
+        if (req.method !== 'GET') {
+            return { handled: true, status: 404, text: 'Not found' };
+        }
+        if (!viewer.owner) {
+            return { handled: true, status: 302, location: '/' };
+        }
+        return { handled: false, page: 'admin', viewer };
+    }
+
+    return { handled: false, viewer };
 }
 
 function redirectUri(req) {
@@ -378,12 +444,13 @@ async function handleAuthRoutes(req, res, pathname, url, http) {
         return false;
     }
 
-    const hostname = hostnameOf(req);
+    const hostname = requestHostname(req);
+    const localOpen = !isConfigured() && isLoopbackHost(hostnameOf(req)) && !isTunnelRequest(req);
     if (isConfigured() && !isAllowedHost(hostname)) {
         http.sendText(res, 403, 'This address is not allowed to open the panel.');
         return true;
     }
-    if (!isConfigured() && !isLoopbackHost(hostname)) {
+    if (!isConfigured() && !localOpen && !isTunnelRequest(req) && !isLoopbackHost(hostnameOf(req))) {
         http.sendText(
             res,
             403,
@@ -394,7 +461,7 @@ async function handleAuthRoutes(req, res, pathname, url, http) {
 
     if (pathname === '/logout') {
         const secure = secureRequest(req);
-        http.redirect(res, isConfigured() ? '/login' : '/', [
+        http.redirect(res, localOpen ? '/' : '/login', [
             clearCookie(SESSION_COOKIE, secure),
             clearCookie(STATE_COOKIE, secure),
         ]);
@@ -402,7 +469,7 @@ async function handleAuthRoutes(req, res, pathname, url, http) {
     }
 
     if (!isConfigured()) {
-        http.sendText(res, 404, 'Not found');
+        http.redirect(res, '/login?error=setup');
         return true;
     }
 
