@@ -64,13 +64,9 @@ ingress:
   - service: http_status:404
 ```
 
-5. Start the bot with `Start-GrokSlop.bat`, then start the tunnel:
+5. Start the bot and the tunnel together with `Start-GrokSlop.bat`. That runs the bot in one minimized window and `cloudflared tunnel run grokslop` in a second window titled GrokSlop Tunnel.
 
-```bat
-cloudflared tunnel run grokslop
-```
-
-A good start does not print `No ingress rules` or `503`. Both programs have to keep running. The page answers only while that PC is on. After the config file works once, `cloudflared service install` starts the tunnel with Windows.
+A good start does not print `No ingress rules` or `503`. Both windows have to keep running. The page answers only while that PC is on. Close the GrokSlop Tunnel window to stop the tunnel.
 
 `www.whorezone.party` is accepted too. Add a DNS route and the matching Discord redirect (`https://www.whorezone.party/auth/discord/callback`) if you want that name.
 
