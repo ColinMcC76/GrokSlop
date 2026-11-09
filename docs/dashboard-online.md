@@ -40,17 +40,20 @@ On the panel, the Access card lists people who signed in and are waiting. Approv
 
 ## 3. Cloudflare Tunnel
 
-1. Create a free Cloudflare account and add `whorezone.party`. Use Cloudflare's nameservers at the registrar so Cloudflare hosts the DNS.
+1. Add `whorezone.party` to the same Cloudflare account that will run the tunnel. Use Cloudflare's nameservers at the registrar.
 2. Install `cloudflared` on the Windows PC: [https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-3. In a terminal:
+3. `cert.pem` in `%USERPROFILE%\.cloudflared` belongs to one zone. If that file is already for another domain, `cloudflared tunnel route dns` appends that zone and creates a name like `whorezone.party.otherdomain.com` instead of `whorezone.party`. Rename the old file, then log in and pick the `whorezone.party` zone in the browser:
 
 ```bat
+ren %USERPROFILE%\.cloudflared\cert.pem cert.pem.other-zone.bak
 cloudflared tunnel login
 cloudflared tunnel create grokslop
 cloudflared tunnel route dns grokslop whorezone.party
 ```
 
-4. Create `%USERPROFILE%\.cloudflared\config.yml`. The tunnel id and the credentials file name are printed when the tunnel is created.
+The route line has to say `Added CNAME whorezone.party`. If it names any other host, stop and fix the login zone before continuing. `cert.pem` and the tunnel `.json` are secrets. Leave them in `.cloudflared` and do not send them anywhere.
+
+4. Create `%USERPROFILE%\.cloudflared\config.yml` before starting the tunnel. Use the tunnel id from the create command. Without this file, `cloudflared` stays connected and answers every request with 503.
 
 ```yaml
 tunnel: TUNNEL-ID
@@ -67,7 +70,7 @@ ingress:
 cloudflared tunnel run grokslop
 ```
 
-Both have to be running. The page answers only while that PC is on. To start the tunnel with Windows, use `cloudflared service install` after the config file works once.
+A good start does not print `No ingress rules` or `503`. Both programs have to keep running. The page answers only while that PC is on. After the config file works once, `cloudflared service install` starts the tunnel with Windows.
 
 `www.whorezone.party` is accepted too. Add a DNS route and the matching Discord redirect (`https://www.whorezone.party/auth/discord/callback`) if you want that name.
 
