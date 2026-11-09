@@ -11,6 +11,9 @@ const taglineEl = $('tagline');
 const volumeInput = $('volume');
 const volumeLabel = $('volumeLabel');
 const logEl = $('log');
+const signIn = $('signIn');
+const adminLink = $('adminLink');
+const signOut = $('signOut');
 
 let latest = null;
 let busy = false;
@@ -118,12 +121,37 @@ function paintSituation() {
     situationEl.textContent = bits.join('  ·  ');
 }
 
+async function ensureAllowed(response) {
+    if (response.status === 401) {
+        window.location.assign('/login');
+        return null;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 403 && data.pending) {
+        window.location.assign('/waiting');
+        return null;
+    }
+    return data;
+}
+
+function paintViewer() {
+    const signedIn = Boolean(latest?.viewer);
+    signIn.hidden = signedIn || latest?.auth !== 'discord';
+    adminLink.hidden = !latest?.viewer?.owner;
+    signOut.hidden = !signedIn;
+}
+
 async function refresh() {
     try {
         const response = await fetch('/api/status');
-        latest = await response.json();
+        const data = await ensureAllowed(response);
+        if (!data) {
+            return;
+        }
+        latest = data;
         paintSelectors();
         paintSituation();
+        paintViewer();
     } catch (err) {
         situationEl.textContent = `Status unavailable: ${err.message || err}`;
     }
@@ -166,7 +194,10 @@ async function run(action, button) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload(action)),
         });
-        const data = await response.json();
+        const data = await ensureAllowed(response);
+        if (!data) {
+            return;
+        }
         setResult(data.message || (data.ok ? 'Done.' : 'Failed.'), data.ok ? 'ok' : 'err');
         if (data.openUrl) {
             window.open(data.openUrl, '_blank', 'noopener');
@@ -248,6 +279,15 @@ function appendLog(text) {
 }
 
 const logs = new EventSource('/api/logs');
+logs.onerror = () => {
+    fetch('/api/me').then((response) => {
+        if (response.status === 401) {
+            window.location.assign('/login');
+        } else if (response.status === 403) {
+            window.location.assign('/waiting');
+        }
+    }).catch(() => {});
+};
 logs.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'snapshot') {

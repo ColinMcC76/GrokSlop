@@ -5,6 +5,8 @@ const util = require('node:util');
 const { spawn } = require('node:child_process');
 
 const config = require('../config');
+const accessStore = require('./accessStore');
+const auth = require('./auth');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PUBLIC_FILES = {
@@ -77,27 +79,52 @@ function hookConsole() {
     }
 }
 
+const BASE_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-store',
+};
+
+function writeHead(res, status, headers) {
+    res.writeHead(status, { ...BASE_HEADERS, ...headers });
+}
+
 function sendJson(res, status, body) {
     const payload = JSON.stringify(body);
-    res.writeHead(status, {
+    writeHead(res, status, {
         'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store',
         'Content-Length': Buffer.byteLength(payload),
     });
     res.end(payload);
+}
+
+function sendText(res, status, text) {
+    writeHead(res, status, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Length': Buffer.byteLength(text),
+    });
+    res.end(text);
+}
+
+function redirect(res, location, cookies) {
+    const headers = { Location: location };
+    if (cookies && cookies.length) {
+        headers['Set-Cookie'] = cookies;
+    }
+    writeHead(res, 302, headers);
+    res.end();
 }
 
 function sendFile(res, spec) {
     const filePath = path.join(PUBLIC_DIR, spec.file);
     fs.readFile(filePath, (err, data) => {
         if (err) {
-            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('Not found');
+            sendText(res, 404, 'Not found');
             return;
         }
-        res.writeHead(200, {
+        writeHead(res, 200, {
             'Content-Type': spec.type,
-            'Cache-Control': 'no-store',
             'Content-Length': data.length,
         });
         res.end(data);
@@ -408,20 +435,55 @@ function startDashboard(client) {
             const url = new URL(req.url || '/', `http://${host}`);
             const pathname = url.pathname;
 
+            if (await auth.handleAuthRoutes(req, res, pathname, url, { redirect, sendText })) {
+                return;
+            }
+
+            const gate = auth.authorizeRequest(req, pathname);
+            if (gate.handled) {
+                if (gate.location) {
+                    redirect(res, gate.location);
+                } else if (gate.json) {
+                    sendJson(res, gate.status, gate.json);
+                } else {
+                    sendText(res, gate.status, gate.text || 'Not found');
+                }
+                return;
+            }
+            if (gate.page === 'login') {
+                sendFile(res, { file: 'login.html', type: 'text/html; charset=utf-8' });
+                return;
+            }
+            if (gate.page === 'waiting') {
+                sendFile(res, { file: 'waiting.html', type: 'text/html; charset=utf-8' });
+                return;
+            }
+            if (gate.page === 'admin') {
+                sendFile(res, { file: 'admin.html', type: 'text/html; charset=utf-8' });
+                return;
+            }
+
             if (req.method === 'GET' && PUBLIC_FILES[pathname]) {
                 sendFile(res, PUBLIC_FILES[pathname]);
                 return;
             }
 
             if (req.method === 'GET' && pathname === '/api/status') {
-                sendJson(res, 200, buildStatus(client));
+                const status = buildStatus(client);
+                status.auth = auth.isConfigured() ? 'discord' : 'off';
+                if (gate.viewer) {
+                    status.viewer = gate.viewer;
+                    if (gate.viewer.owner) {
+                        status.access = accessStore.list();
+                    }
+                }
+                sendJson(res, 200, status);
                 return;
             }
 
             if (req.method === 'GET' && pathname === '/api/logs') {
-                res.writeHead(200, {
+                writeHead(res, 200, {
                     'Content-Type': 'text/event-stream; charset=utf-8',
-                    'Cache-Control': 'no-store',
                     Connection: 'keep-alive',
                 });
                 res.write(
@@ -435,6 +497,22 @@ function startDashboard(client) {
                     clearInterval(heartbeat);
                     logClients.delete(res);
                 });
+                return;
+            }
+
+            if (req.method === 'POST' && pathname === '/api/access') {
+                if (!gate.viewer?.owner) {
+                    sendJson(res, 403, {
+                        ok: false,
+                        message: gate.viewer
+                            ? 'Only the owner can change access.'
+                            : 'Discord login is not configured.',
+                    });
+                    return;
+                }
+                const body = await readBody(req);
+                const result = accessStore.change(body.op, body.id, gate.viewer.id);
+                sendJson(res, result.status, { ok: result.ok, message: result.message });
                 return;
             }
 
@@ -551,8 +629,7 @@ function startDashboard(client) {
                 return;
             }
 
-            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('Not found');
+            sendText(res, 404, 'Not found');
         } catch (err) {
             const status = err.statusCode || 500;
             if (status >= 500) {

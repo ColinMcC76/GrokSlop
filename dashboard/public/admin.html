@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Access · GrokSlop</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="gate">
+    <main class="gate-card admin-card">
+        <h1>Access</h1>
+        <p id="who">Checking sign-in…</p>
+        <p id="notice" class="notice"></p>
+        <h3>Waiting</h3>
+        <div id="pending"></div>
+        <h3>Approved</h3>
+        <div id="approved"></div>
+        <div class="gate-links">
+            <a href="/">Controls</a>
+            <a class="sign-out" href="/logout">Sign out</a>
+        </div>
+    </main>
+    <script>
+        const who = document.getElementById('who');
+        const notice = document.getElementById('notice');
+        const pending = document.getElementById('pending');
+        const approved = document.getElementById('approved');
+
+        function personName(person) {
+            if (person.globalName && person.globalName !== person.username) {
+                return `${person.globalName} (@${person.username})`;
+            }
+            return person.globalName || person.username || person.id;
+        }
+
+        function renderPeople(container, people, actions, emptyText) {
+            container.replaceChildren();
+            if (!people.length) {
+                const empty = document.createElement('p');
+                empty.className = 'hint';
+                empty.textContent = emptyText;
+                container.appendChild(empty);
+                return;
+            }
+            for (const person of people) {
+                const row = document.createElement('div');
+                row.className = 'row person';
+                const name = document.createElement('span');
+                name.textContent = personName(person);
+                row.appendChild(name);
+                for (const action of actions) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.textContent = action.label;
+                    if (action.quiet) {
+                        button.className = 'quiet';
+                    }
+                    button.addEventListener('click', () => changeAccess(action.op, person.id, button));
+                    row.appendChild(button);
+                }
+                container.appendChild(row);
+            }
+        }
+
+        async function load() {
+            const response = await fetch('/api/status');
+            if (response.status === 401) {
+                window.location.assign('/login');
+                return null;
+            }
+            const data = await response.json().catch(() => ({}));
+            if (response.status === 403 && data.pending) {
+                window.location.assign('/waiting');
+                return null;
+            }
+            if (!data.viewer?.owner) {
+                window.location.assign('/');
+                return null;
+            }
+            who.textContent = `Signed in as ${data.viewer.username}. Approve someone before they can use the controls.`;
+            renderPeople(
+                pending,
+                data.access?.pending || [],
+                [
+                    { op: 'approve', label: 'Approve' },
+                    { op: 'deny', label: 'Deny', quiet: true },
+                ],
+                'Nobody is waiting.'
+            );
+            renderPeople(
+                approved,
+                data.access?.approved || [],
+                [{ op: 'remove', label: 'Remove', quiet: true }],
+                'Nobody else is approved.'
+            );
+            return data;
+        }
+
+        async function changeAccess(op, id, button) {
+            button.disabled = true;
+            notice.textContent = '';
+            try {
+                const response = await fetch('/api/access', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ op, id }),
+                });
+                if (response.status === 401) {
+                    window.location.assign('/login');
+                    return;
+                }
+                const data = await response.json().catch(() => ({}));
+                if (response.status === 403 && data.pending) {
+                    window.location.assign('/waiting');
+                    return;
+                }
+                notice.className = data.ok ? 'hint' : 'notice';
+                notice.textContent = data.message || (data.ok ? 'Done.' : 'Failed.');
+                await load();
+            } catch (err) {
+                notice.textContent = err.message || String(err);
+                button.disabled = false;
+            }
+        }
+
+        load().catch((err) => {
+            who.textContent = `Could not load access: ${err.message || err}`;
+        });
+    </script>
+</body>
+</html>

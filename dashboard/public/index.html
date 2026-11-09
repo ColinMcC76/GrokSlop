@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GrokSlop</title>
+    <meta name="robots" content="noindex">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -15,7 +16,14 @@
     </nav>
     <header class="top">
         <p id="tagline" class="tagline">Starting…</p>
-        <div id="presence" class="presence offline">Offline</div>
+        <div class="presence-wrap">
+            <div id="presence" class="presence offline">Offline</div>
+            <div class="header-links">
+                <a id="signIn" class="sign-out" href="/login" hidden>Sign in</a>
+                <a id="adminLink" class="sign-out" href="/admin" hidden>Access</a>
+                <a id="signOut" class="sign-out" href="/logout" hidden>Sign out</a>
+            </div>
+        </div>
         <div class="selectors">
             <label>Server
                 <select id="guild"></select>
