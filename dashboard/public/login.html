@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Sign in · GrokSlop</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="gate">
+    <main class="gate-card">
+        <h1>GrokSlop</h1>
+        <p>Sign in with Discord. The owner approves your account before the panel will open.</p>
+        <p id="notice" class="notice"></p>
+        <a class="button" href="/auth/discord">Sign in with Discord</a>
+    </main>
+    <script>
+        const notices = {
+            denied: 'Discord sign-in was cancelled.',
+            failed: 'Discord sign-in did not finish. Try again.',
+        };
+        const notice = notices[new URLSearchParams(location.search).get('error')];
+        if (notice) {
+            document.getElementById('notice').textContent = notice;
+        }
+    </script>
+</body>
+</html>

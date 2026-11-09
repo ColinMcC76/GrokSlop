@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Waiting · GrokSlop</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="gate">
+    <main class="gate-card">
+        <h1>Waiting for approval</h1>
+        <p id="who">Checking your sign-in…</p>
+        <div class="gate-links">
+            <a class="sign-out" href="/logout">Use a different Discord account</a>
+        </div>
+    </main>
+    <script>
+        const who = document.getElementById('who');
+
+        async function tick() {
+            try {
+                const response = await fetch('/api/me');
+                if (response.status === 401) {
+                    window.location.assign('/login');
+                    return;
+                }
+                const data = await response.json();
+                if (data.status === 'allowed') {
+                    window.location.assign('/');
+                    return;
+                }
+                const name = data.username || 'your Discord account';
+                who.textContent = `Signed in as ${name}. The owner has to approve you before the panel will open.`;
+            } catch (err) {
+                who.textContent = `Could not check approval: ${err.message || err}`;
+            }
+        }
+
+        tick();
+        setInterval(tick, 3000);
+    </script>
+</body>
+</html>

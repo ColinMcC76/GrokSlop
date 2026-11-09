@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GrokSlop</title>
+    <meta name="robots" content="noindex">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -12,7 +13,10 @@
             <h1>GrokSlop</h1>
             <p id="tagline">Starting…</p>
         </div>
-        <div id="presence" class="presence offline">Offline</div>
+        <div class="presence-wrap">
+            <div id="presence" class="presence offline">Offline</div>
+            <a id="signOut" class="sign-out" href="/logout" hidden>Sign out</a>
+        </div>
         <div class="selectors">
             <label>Server
                 <select id="guild"></select>
@@ -33,6 +37,15 @@
     <pre id="result" class="result" aria-live="polite">Ready.</pre>
 
     <main class="board">
+        <section id="accessPanel" hidden>
+            <h2>Access</h2>
+            <p class="hint">Friends sign in with Discord and wait here until you approve them. Removing someone cuts them off on their next click.</p>
+            <h3>Waiting</h3>
+            <div id="accessPending"></div>
+            <h3>Approved</h3>
+            <div id="accessApproved"></div>
+        </section>
+
         <section>
             <h2>Voice</h2>
             <div class="row">
