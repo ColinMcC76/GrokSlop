@@ -83,6 +83,104 @@ textarea {
     color: var(--offline);
 }
 
+.presence-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.sign-out {
+    color: var(--muted);
+    font-size: 12px;
+    text-decoration: none;
+}
+
+.sign-out:hover {
+    color: var(--text);
+}
+
+#accessPanel {
+    grid-column: 1 / -1;
+}
+
+h3 {
+    margin: 12px 0 4px;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.person {
+    align-items: center;
+}
+
+.person span {
+    flex: 1;
+    min-width: 0;
+}
+
+body.gate {
+    display: grid;
+    place-items: center;
+    height: auto;
+    min-height: 100%;
+    overflow: auto;
+    padding: 24px;
+}
+
+.gate-card {
+    width: min(420px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 12px;
+    padding: 24px;
+}
+
+.gate-card h1 {
+    margin: 0 0 8px;
+    font-size: 22px;
+}
+
+.gate-card p {
+    margin: 0;
+    color: var(--muted);
+}
+
+.gate-card .notice {
+    margin-top: 12px;
+    color: var(--bad);
+}
+
+a.button {
+    display: inline-block;
+    margin-top: 16px;
+    padding: 8px 14px;
+    border-radius: 7px;
+    background: var(--amber);
+    color: var(--amber-ink);
+    font-weight: 650;
+    text-decoration: none;
+}
+
+a.button:hover {
+    filter: brightness(1.06);
+}
+
+.gate-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    margin-top: 16px;
+}
+
+.gate-links a.button {
+    margin-top: 0;
+}
+
 .selectors {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -11,6 +11,10 @@ const taglineEl = $('tagline');
 const volumeInput = $('volume');
 const volumeLabel = $('volumeLabel');
 const logEl = $('log');
+const signOut = $('signOut');
+const accessPanel = $('accessPanel');
+const accessPending = $('accessPending');
+const accessApproved = $('accessApproved');
 
 let latest = null;
 let busy = false;
@@ -118,12 +122,106 @@ function paintSituation() {
     situationEl.textContent = bits.join('  ·  ');
 }
 
+async function ensureAllowed(response) {
+    if (response.status === 401) {
+        window.location.assign('/login');
+        return null;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 403 && data.pending) {
+        window.location.assign('/waiting');
+        return null;
+    }
+    return data;
+}
+
+function renderPeople(container, people, actions, emptyText) {
+    container.replaceChildren();
+    if (!people.length) {
+        const empty = document.createElement('p');
+        empty.className = 'hint';
+        empty.textContent = emptyText;
+        container.appendChild(empty);
+        return;
+    }
+    for (const person of people) {
+        const row = document.createElement('div');
+        row.className = 'row person';
+        const name = document.createElement('span');
+        const shown = person.globalName && person.globalName !== person.username
+            ? `${person.globalName} (@${person.username})`
+            : (person.globalName || person.username || person.id);
+        name.textContent = shown;
+        row.appendChild(name);
+        for (const action of actions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = action.label;
+            if (action.quiet) {
+                button.className = 'quiet';
+            }
+            button.addEventListener('click', () => changeAccess(action.op, person.id, button));
+            row.appendChild(button);
+        }
+        container.appendChild(row);
+    }
+}
+
+function paintAccess() {
+    signOut.hidden = !latest?.viewer;
+    const owner = Boolean(latest?.viewer?.owner && latest.access);
+    accessPanel.hidden = !owner;
+    if (!owner) {
+        return;
+    }
+    renderPeople(
+        accessPending,
+        latest.access.pending || [],
+        [
+            { op: 'approve', label: 'Approve' },
+            { op: 'deny', label: 'Deny', quiet: true },
+        ],
+        'Nobody is waiting.'
+    );
+    renderPeople(
+        accessApproved,
+        latest.access.approved || [],
+        [{ op: 'remove', label: 'Remove', quiet: true }],
+        'Nobody else is approved.'
+    );
+}
+
+async function changeAccess(op, id, button) {
+    button.disabled = true;
+    try {
+        const response = await fetch('/api/access', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ op, id }),
+        });
+        const data = await ensureAllowed(response);
+        if (!data) {
+            return;
+        }
+        setResult(data.message || (data.ok ? 'Done.' : 'Failed.'), data.ok ? 'ok' : 'err');
+        await refresh();
+    } catch (err) {
+        setResult(err.message || String(err), 'err');
+        button.disabled = false;
+    }
+}
+
 async function refresh() {
     try {
         const response = await fetch('/api/status');
-        latest = await response.json();
+        const data = await ensureAllowed(response);
+        if (!data) {
+            return;
+        }
+        latest = data;
         paintSelectors();
         paintSituation();
+        paintAccess();
     } catch (err) {
         situationEl.textContent = `Status unavailable: ${err.message || err}`;
     }
@@ -166,7 +264,10 @@ async function run(action, button) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload(action)),
         });
-        const data = await response.json();
+        const data = await ensureAllowed(response);
+        if (!data) {
+            return;
+        }
         setResult(data.message || (data.ok ? 'Done.' : 'Failed.'), data.ok ? 'ok' : 'err');
         if (data.openUrl) {
             window.open(data.openUrl, '_blank', 'noopener');
@@ -229,6 +330,15 @@ function appendLog(text) {
 }
 
 const logs = new EventSource('/api/logs');
+logs.onerror = () => {
+    fetch('/api/me').then((response) => {
+        if (response.status === 401) {
+            window.location.assign('/login');
+        } else if (response.status === 403) {
+            window.location.assign('/waiting');
+        }
+    }).catch(() => {});
+};
 logs.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'snapshot') {
