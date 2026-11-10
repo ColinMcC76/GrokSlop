@@ -562,6 +562,39 @@ joinBtn.addEventListener('click', () => {
     follow();
 });
 
+const stage = $('stage');
+const theaterBtn = $('theater');
+const fullscreenBtn = $('fullscreen');
+
+function setModeButton(button, on) {
+    button.classList.toggle('active', on);
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+
+theaterBtn.addEventListener('click', () => {
+    const on = document.body.classList.toggle('stream-theater');
+    setModeButton(theaterBtn, on);
+    if (on) {
+        stage.scrollIntoView({ block: 'start' });
+    }
+});
+
+fullscreenBtn.addEventListener('click', async () => {
+    try {
+        if (document.fullscreenElement === stage) {
+            await document.exitFullscreen();
+        } else {
+            await stage.requestFullscreen();
+        }
+    } catch (err) {
+        setResult(err?.message || 'Full screen is not available in this browser.', 'err');
+    }
+});
+
+document.addEventListener('fullscreenchange', () => {
+    setModeButton(fullscreenBtn, document.fullscreenElement === stage);
+});
+
 guildSelect.addEventListener('change', () => {
     writeSelection({
         guildId: guildSelect.value,
