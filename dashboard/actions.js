@@ -16,8 +16,11 @@ const {
     previousTrack,
     moveQueueItem,
     removeUpcoming,
+    resolveToQueueItems,
     SEEK_STEP_MS,
 } = require('../services/youtubeQueue');
+const { extractVideoId } = require('../services/youtubeTranscript');
+const streamRoom = require('../services/streamRoom');
 const {
     startRealtimeForGuild,
     stopRealtimeForGuild,
@@ -452,6 +455,108 @@ const handlers = {
 
     queue(ctx) {
         return formatQueue(ctx.guild.id);
+    },
+
+    async stream_add(ctx) {
+        const query = asString(ctx.body.query, 500);
+        if (!query) {
+            throw fail('Enter a YouTube link or search.');
+        }
+        let resolved;
+        try {
+            resolved = await resolveToQueueItems(query);
+        } catch (err) {
+            throw fail(err?.message || 'No YouTube results found.');
+        }
+        const items = [];
+        for (const row of resolved) {
+            try {
+                items.push({
+                    videoId: extractVideoId(row.url),
+                    url: row.url,
+                    title: row.title || 'YouTube',
+                    durationMs: row.durationMs || null,
+                });
+            } catch {
+                /* a playlist row without a video id is skipped */
+            }
+        }
+        if (!items.length) {
+            throw fail('No playable YouTube video found.');
+        }
+        streamRoom.addItems(ctx.guild.id, items);
+        const preview = items
+            .slice(0, 3)
+            .map((item) => item.title)
+            .join(', ');
+        const more = items.length > 3 ? ` (+${items.length - 3} more)` : '';
+        return items.length === 1
+            ? `Queued: ${items[0].title}`
+            : `Queued ${items.length} videos: ${preview}${more}`;
+    },
+
+    stream_play(ctx) {
+        streamRoom.play(ctx.guild.id);
+        return 'Playing.';
+    },
+
+    stream_pause(ctx) {
+        streamRoom.pause(ctx.guild.id);
+        return 'Paused.';
+    },
+
+    stream_stop(ctx) {
+        streamRoom.stop(ctx.guild.id);
+        return 'Stopped.';
+    },
+
+    stream_previous(ctx) {
+        return streamRoom.previous(ctx.guild.id);
+    },
+
+    stream_skip(ctx) {
+        streamRoom.skip(ctx.guild.id);
+        return 'Skipped.';
+    },
+
+    stream_back(ctx) {
+        streamRoom.seekBy(ctx.guild.id, -streamRoom.SEEK_STEP_MS);
+        return 'Rewound 10 seconds.';
+    },
+
+    stream_forward(ctx) {
+        streamRoom.seekBy(ctx.guild.id, streamRoom.SEEK_STEP_MS);
+        return 'Jumped ahead 10 seconds.';
+    },
+
+    stream_seek(ctx) {
+        const positionMs = Number(ctx.body.positionMs);
+        if (!Number.isFinite(positionMs) || positionMs < 0) {
+            throw fail('Pick a spot in the video.');
+        }
+        streamRoom.seek(ctx.guild.id, positionMs);
+        return 'Moved to that spot in the video.';
+    },
+
+    stream_remove(ctx) {
+        streamRoom.removeUpcoming(ctx.guild.id, Number(ctx.body.index));
+        return 'Removed from the queue.';
+    },
+
+    stream_reorder(ctx) {
+        streamRoom.moveItem(ctx.guild.id, ctx.body.fromIndex, ctx.body.toIndex);
+        return 'Queue order updated.';
+    },
+
+    stream_volume(ctx) {
+        const percent = Number(ctx.body.percent);
+        streamRoom.setVolume(ctx.guild.id, percent);
+        return `Volume set to ${percent}%.`;
+    },
+
+    stream_ended(ctx) {
+        streamRoom.reportEnded(ctx.guild.id, asString(ctx.body.videoId, 32));
+        return 'OK';
     },
 
     async talkon(ctx) {
