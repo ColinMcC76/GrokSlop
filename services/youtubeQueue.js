@@ -1835,5 +1835,6 @@ module.exports = {
     previousTrack,
     moveQueueItem,
     removeUpcoming,
+    resolveToQueueItems,
     SEEK_STEP_MS,
 };

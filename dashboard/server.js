@@ -21,6 +21,9 @@ const PUBLIC_FILES = {
     '/queue': { file: 'queue.html', type: 'text/html; charset=utf-8' },
     '/queue.html': { file: 'queue.html', type: 'text/html; charset=utf-8' },
     '/queue.js': { file: 'queue.js', type: 'text/javascript; charset=utf-8' },
+    '/stream': { file: 'stream.html', type: 'text/html; charset=utf-8' },
+    '/stream.html': { file: 'stream.html', type: 'text/html; charset=utf-8' },
+    '/stream.js': { file: 'stream.js', type: 'text/javascript; charset=utf-8' },
 };
 
 const SOUND_ID =
@@ -513,6 +516,35 @@ function startDashboard(client) {
                 const body = await readBody(req);
                 const result = accessStore.change(body.op, body.id, gate.viewer.id);
                 sendJson(res, result.status, { ok: result.ok, message: result.message });
+                return;
+            }
+
+            if (req.method === 'GET' && pathname === '/api/stream') {
+                if (!clientReady(client)) {
+                    sendJson(res, 503, {
+                        ok: false,
+                        message: 'GrokSlop is not online yet.',
+                    });
+                    return;
+                }
+                const { getStreamView } = require('../services/streamRoom');
+                const guildId = url.searchParams.get('guildId') || '';
+                const now = Date.now();
+                sendJson(res, 200, {
+                    ok: true,
+                    ...(guildId ? getStreamView(guildId, now) : {
+                        status: 'idle',
+                        positionMs: 0,
+                        durationMs: null,
+                        revision: 0,
+                        serverNow: now,
+                        current: null,
+                        upcoming: [],
+                        total: 0,
+                        volume: 100,
+                        canPrevious: false,
+                    }),
+                });
                 return;
             }
 
