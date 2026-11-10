@@ -527,23 +527,39 @@ function startDashboard(client) {
                     });
                     return;
                 }
-                const { getStreamView } = require('../services/streamRoom');
+                const { getStreamView, touchViewer, leaveViewer } = require('../services/streamRoom');
                 const guildId = url.searchParams.get('guildId') || '';
                 const now = Date.now();
+                const watching = url.searchParams.get('watching') === '1';
+                const leaving = url.searchParams.get('leave') === '1';
+                const self = gate.viewer
+                    ? { id: gate.viewer.id, username: gate.viewer.username }
+                    : { id: 'local', username: 'This computer' };
+                if (guildId && leaving) {
+                    leaveViewer(guildId, self.id);
+                } else if (guildId && watching) {
+                    touchViewer(guildId, self, now);
+                }
+                const view = guildId ? getStreamView(guildId, now) : {
+                    status: 'idle',
+                    positionMs: 0,
+                    durationMs: null,
+                    revision: 0,
+                    serverNow: now,
+                    current: null,
+                    upcoming: [],
+                    total: 0,
+                    volume: 100,
+                    canPrevious: false,
+                    viewers: [],
+                };
+                view.viewers = (view.viewers || []).map((person) => ({
+                    ...person,
+                    you: person.id === self.id,
+                }));
                 sendJson(res, 200, {
                     ok: true,
-                    ...(guildId ? getStreamView(guildId, now) : {
-                        status: 'idle',
-                        positionMs: 0,
-                        durationMs: null,
-                        revision: 0,
-                        serverNow: now,
-                        current: null,
-                        upcoming: [],
-                        total: 0,
-                        volume: 100,
-                        canPrevious: false,
-                    }),
+                    ...view,
                 });
                 return;
             }

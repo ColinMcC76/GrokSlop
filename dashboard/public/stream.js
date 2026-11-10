@@ -47,6 +47,7 @@ function emptyView() {
         total: 0,
         volume: 100,
         canPrevious: false,
+        viewers: [],
     };
 }
 
@@ -303,6 +304,35 @@ function paintQueue() {
     });
 }
 
+function paintViewers() {
+    const list = $('viewerList');
+    const count = $('viewerCount');
+    const people = Array.isArray(view.viewers) ? [...view.viewers] : [];
+    people.sort((a, b) => {
+        if (Boolean(a.you) !== Boolean(b.you)) {
+            return a.you ? -1 : 1;
+        }
+        return String(a.username || '').localeCompare(String(b.username || ''));
+    });
+    count.textContent = people.length === 1 ? '1 watching' : `${people.length} watching`;
+    list.replaceChildren();
+    if (!people.length) {
+        const empty = document.createElement('li');
+        empty.className = 'viewer-empty';
+        empty.textContent = 'No one is watching yet.';
+        list.append(empty);
+        return;
+    }
+    for (const person of people) {
+        const item = document.createElement('li');
+        if (person.you) {
+            item.className = 'is-you';
+        }
+        item.textContent = person.you ? `${person.username} (you)` : person.username;
+        list.append(item);
+    }
+}
+
 function playerSeconds() {
     try {
         const time = player?.getCurrentTime?.();
@@ -428,11 +458,14 @@ async function refreshStream() {
         view = emptyView();
         paintTransport();
         paintQueue();
+        paintViewers();
         follow();
         return;
     }
     try {
-        const response = await fetch(`/api/stream?guildId=${encodeURIComponent(guildSelect.value)}`);
+        const response = await fetch(
+            `/api/stream?guildId=${encodeURIComponent(guildSelect.value)}&watching=${joined ? '1' : '0'}`
+        );
         const data = await response.json();
         if (!response.ok || !data.ok) {
             throw new Error(data.message || 'The stream is unavailable.');
@@ -443,6 +476,7 @@ async function refreshStream() {
         view = data;
         paintTransport();
         paintQueue();
+        paintViewers();
         follow();
     } catch (err) {
         if (!scrubbing) {
@@ -482,7 +516,17 @@ async function control(action, extra) {
         busy = false;
         paintTransport();
         paintQueue();
+        paintViewers();
     }
+}
+
+let presenceGuild = '';
+
+function leaveStream(guildId) {
+    if (!guildId) return;
+    fetch(`/api/stream?guildId=${encodeURIComponent(guildId)}&leave=1`, {
+        keepalive: true,
+    }).catch(() => {});
 }
 
 function reportEnded(videoId) {
@@ -560,6 +604,7 @@ joinBtn.addEventListener('click', () => {
     joined = true;
     joinBtn.hidden = true;
     follow();
+    refreshStream();
 });
 
 const stage = $('stage');
@@ -596,6 +641,10 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 guildSelect.addEventListener('change', () => {
+    if (presenceGuild && presenceGuild !== guildSelect.value) {
+        leaveStream(presenceGuild);
+    }
+    presenceGuild = guildSelect.value;
     writeSelection({
         guildId: guildSelect.value,
         textChannelId: readSelection().textChannelId || '',
@@ -643,7 +692,12 @@ const iframeApi = document.createElement('script');
 iframeApi.src = 'https://www.youtube.com/iframe_api';
 document.head.appendChild(iframeApi);
 
-refreshStatus().then(refreshStream);
+window.addEventListener('pagehide', () => leaveStream(presenceGuild || guildSelect.value));
+
+refreshStatus().then(() => {
+    presenceGuild = guildSelect.value;
+    return refreshStream();
+});
 setInterval(refreshStatus, 4000);
 setInterval(refreshStream, 400);
 setInterval(() => {

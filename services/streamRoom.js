@@ -2,6 +2,7 @@ const SEEK_STEP_MS = 10_000;
 const PREVIOUS_RESTART_MS = 3_000;
 const SEEK_COALESCE_MS = 400;
 const HISTORY_LIMIT = 50;
+const VIEWER_STALE_MS = 12_000;
 
 /**
  * @typedef {{
@@ -161,6 +162,7 @@ function getStreamView(guildId, now = Date.now()) {
             total: 0,
             volume: 100,
             canPrevious: false,
+            viewers: [],
         };
     }
     catchUp(state, now);
@@ -186,7 +188,60 @@ function getStreamView(guildId, now = Date.now()) {
         total: state.items.length,
         volume: state.volume,
         canPrevious: Boolean(current) || state.history.length > 0,
+        viewers: listViewers(state, now),
     };
+}
+
+/**
+ * @param {StreamRoom} state
+ * @param {number} now
+ */
+function listViewers(state, now) {
+    if (!state.viewers) {
+        return [];
+    }
+    const people = [];
+    for (const [id, viewer] of state.viewers) {
+        if (now - viewer.seenAt > VIEWER_STALE_MS) {
+            state.viewers.delete(id);
+            continue;
+        }
+        people.push({ id: viewer.id, username: viewer.username });
+    }
+    people.sort((a, b) => a.username.localeCompare(b.username) || a.id.localeCompare(b.id));
+    return people;
+}
+
+/**
+ * @param {string} guildId
+ * @param {{ id?: string, username?: string }} viewer
+ * @param {number} [now]
+ */
+function touchViewer(guildId, viewer, now = Date.now()) {
+    const id = String(viewer?.id || '').trim();
+    if (!guildId || !id) {
+        return getStreamView(guildId, now);
+    }
+    const state = room(guildId);
+    if (!state.viewers) {
+        state.viewers = new Map();
+    }
+    const username = String(viewer.username || id).trim().slice(0, 64) || id;
+    state.viewers.set(id, { id, username, seenAt: now });
+    return getStreamView(guildId, now);
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} viewerId
+ */
+function leaveViewer(guildId, viewerId, now = Date.now()) {
+    const state = rooms.get(guildId);
+    const id = String(viewerId || '').trim();
+    if (state?.viewers && id) {
+        state.viewers.delete(id);
+    }
+    return getStreamView(guildId, now);
 }
 
 /**
@@ -498,6 +553,9 @@ module.exports = {
     setVolume,
     reportEnded,
     getStreamView,
+    touchViewer,
+    leaveViewer,
     SEEK_STEP_MS,
     PREVIOUS_RESTART_MS,
+    VIEWER_STALE_MS,
 };
