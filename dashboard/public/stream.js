@@ -21,7 +21,8 @@ const SEEK_SETTLE_MS = 1500;
 let latest = null;
 let view = emptyView();
 let scrubbing = false;
-let voluming = false;
+let volumeDragging = false;
+let volumeKeyApplied = '';
 let dragging = false;
 let pointerDrag = null;
 let busy = false;
@@ -34,6 +35,79 @@ let appliedRevision = -1;
 let settleUntil = 0;
 let appliedVolume = null;
 let endedFor = '';
+
+function clampVolume(value) {
+    const stepped = Math.round(Number(value) / 5) * 5;
+    if (!Number.isFinite(stepped)) {
+        return 100;
+    }
+    return Math.min(100, Math.max(0, stepped));
+}
+
+function volumeStorageKey() {
+    const id = latest?.viewer?.id;
+    return id ? `grokslop-stream-volume:${id}` : 'grokslop-stream-volume';
+}
+
+function readStoredVolume(key) {
+    try {
+        const saved = localStorage.getItem(key);
+        if (saved == null || saved === '') {
+            return null;
+        }
+        return clampVolume(saved);
+    } catch {
+        return null;
+    }
+}
+
+function readLocalVolume() {
+    const saved = readStoredVolume(volumeStorageKey());
+    return saved == null ? 100 : saved;
+}
+
+function writeLocalVolume(percent) {
+    try {
+        localStorage.setItem(volumeStorageKey(), String(percent));
+    } catch {
+        /* private mode */
+    }
+}
+
+function pushVolume(percent) {
+    writeLocalVolume(percent);
+    volumeInput.dataset.touched = '1';
+    if (!playerReady || !player) {
+        appliedVolume = null;
+        return;
+    }
+    try {
+        player.setVolume(percent);
+        appliedVolume = percent;
+    } catch {
+        appliedVolume = null;
+    }
+}
+
+function syncSavedVolume() {
+    const key = volumeStorageKey();
+    if (volumeDragging || key === volumeKeyApplied) {
+        return;
+    }
+    const previous = volumeKeyApplied;
+    volumeKeyApplied = key;
+    let percent = readStoredVolume(key);
+    if (percent == null && previous && volumeInput.dataset.touched === '1') {
+        percent = clampVolume(volumeInput.value);
+        writeLocalVolume(percent);
+    }
+    if (percent == null) {
+        percent = 100;
+    }
+    volumeInput.value = String(percent);
+    appliedVolume = null;
+    applyVolume();
+}
 
 function emptyView() {
     return {
@@ -166,9 +240,6 @@ function paintTransport() {
     toggleBtn.setAttribute('aria-pressed', playing ? 'true' : 'false');
     stopBtn.classList.toggle('active', stopped);
     stopBtn.setAttribute('aria-pressed', stopped ? 'true' : 'false');
-    if (!voluming && Number.isFinite(view.volume)) {
-        volumeInput.value = String(view.volume);
-    }
     const hasTrack = Boolean(current);
     $('back').disabled = !hasTrack || busy;
     $('forward').disabled = !hasTrack || busy;
@@ -177,7 +248,6 @@ function paintTransport() {
     toggleBtn.disabled = !hasTrack || busy;
     stopBtn.disabled = !hasTrack || busy;
     scrub.disabled = !hasTrack;
-    volumeInput.disabled = !guildSelect.value || busy;
 }
 
 function queueRows() {
@@ -351,11 +421,12 @@ function playerState() {
 }
 
 function applyVolume() {
-    if (!playerReady || voluming || !Number.isFinite(view.volume)) return;
-    if (appliedVolume === view.volume) return;
+    if (!playerReady || !player || volumeDragging) return;
+    const percent = readLocalVolume();
+    if (appliedVolume === percent) return;
     try {
-        player.setVolume(view.volume);
-        appliedVolume = view.volume;
+        player.setVolume(percent);
+        appliedVolume = percent;
     } catch {
         /* player is still starting */
     }
@@ -371,6 +442,7 @@ function loadCurrent(seconds) {
     }
     appliedVideoId = id;
     appliedRevision = view.revision;
+    appliedVolume = null;
     settleUntil = Date.now() + SEEK_SETTLE_MS;
     endedFor = '';
 }
@@ -448,6 +520,7 @@ async function refreshStatus() {
         latest = await response.json();
         paintSelectors();
         paintPresence();
+        syncSavedVolume();
     } catch (err) {
         situationEl.textContent = `Status unavailable: ${err.message || err}`;
     }
@@ -588,16 +661,20 @@ scrub.addEventListener('pointercancel', () => {
 });
 
 volumeInput.addEventListener('pointerdown', () => {
-    voluming = true;
+    volumeDragging = true;
+});
+volumeInput.addEventListener('input', () => {
+    pushVolume(clampVolume(volumeInput.value));
 });
 volumeInput.addEventListener('change', () => {
-    voluming = false;
-    const percent = Math.round(Number(volumeInput.value) / 5) * 5;
-    volumeInput.value = String(Math.min(100, Math.max(0, percent)));
-    control('stream_volume', { percent: Number(volumeInput.value) });
+    volumeDragging = false;
+    const percent = clampVolume(volumeInput.value);
+    volumeInput.value = String(percent);
+    pushVolume(percent);
 });
 volumeInput.addEventListener('pointercancel', () => {
-    voluming = false;
+    volumeDragging = false;
+    applyVolume();
 });
 
 joinBtn.addEventListener('click', () => {
@@ -694,6 +771,7 @@ document.head.appendChild(iframeApi);
 
 window.addEventListener('pagehide', () => leaveStream(presenceGuild || guildSelect.value));
 
+syncSavedVolume();
 refreshStatus().then(() => {
     presenceGuild = guildSelect.value;
     return refreshStream();
