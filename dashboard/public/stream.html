@@ -6,7 +6,7 @@
     <title>GrokSlop</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="stream-page">
     <nav class="tabs" aria-label="GrokSlop">
         <span class="tabs-mark">GrokSlop</span>
         <a href="/">Controls</a>
@@ -28,6 +28,7 @@
     <pre id="result" class="result" aria-live="polite">Ready.</pre>
 
     <main class="sound-main">
+        <div id="stage" class="stream-stage">
         <div class="stream-frame">
             <div id="player"></div>
             <button type="button" id="join" class="stream-join">Click to watch</button>
@@ -56,6 +57,12 @@
                 <button type="button" id="skip" class="icon" title="Next" aria-label="Next">
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 2.4 6.4 8l-4.6 5.6zM7.8 2.4 12.4 8 7.8 13.6zM14 2.6h1.7v10.8H14z"/></svg>
                 </button>
+                <button type="button" id="theater" class="icon" title="Theater mode" aria-label="Theater mode" aria-pressed="false">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.2 3.4h13.6a.8.8 0 0 1 .8.8v7.6a.8.8 0 0 1-.8.8H1.2a.8.8 0 0 1-.8-.8V4.2a.8.8 0 0 1 .8-.8zm1.2 1.6v6h10.4v-6H2.4z"/></svg>
+                </button>
+                <button type="button" id="fullscreen" class="icon" title="Full screen" aria-label="Full screen" aria-pressed="false">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6.2V2h4.2v1.6H3.6v2.6H2zm8.2-4.2H14v4.2h-1.6V3.6h-2.2V2zM12.4 12.4V9.8H14V14H9.8v-1.6h2.6zM3.6 12.4h2.6V14H2V9.8h1.6v2.6z"/></svg>
+                </button>
                 <span class="transport-gap"></span>
                 <label class="player-volume">
                     <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -71,6 +78,7 @@
                 <span id="clock">00:00 / 00:00</span>
             </div>
         </section>
+        </div>
 
         <section class="composer">
             <h2>Add to stream</h2>
