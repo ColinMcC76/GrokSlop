@@ -8,6 +8,9 @@ const {
     getStreamView,
     reportEnded,
     skip,
+    touchViewer,
+    leaveViewer,
+    VIEWER_STALE_MS,
 } = require('../services/streamRoom');
 
 function item(videoId, durationMs) {
@@ -97,5 +100,29 @@ describe('shared stream clock', () => {
         const view = getStreamView(guildId, start + 1_000);
         assert.equal(view.current.videoId, 'fffffffffff');
         assert.equal(view.positionMs, 0);
+    });
+});
+
+describe('stream viewers', () => {
+    it('lists people who are watching and drops them when they leave or go quiet', () => {
+        const guildId = 'viewers';
+        const start = 5_000_000;
+        touchViewer(guildId, { id: '2', username: 'Sam' }, start);
+        const both = touchViewer(guildId, { id: '1', username: 'Ada' }, start);
+        assert.deepEqual(
+            both.viewers.map((person) => person.username),
+            ['Ada', 'Sam']
+        );
+
+        touchViewer(guildId, { id: '1', username: 'Ada' }, start);
+        const stillOne = getStreamView(guildId, start);
+        assert.equal(stillOne.viewers.filter((person) => person.id === '1').length, 1);
+
+        leaveViewer(guildId, '2', start);
+        const afterLeave = getStreamView(guildId, start);
+        assert.deepEqual(afterLeave.viewers.map((person) => person.id), ['1']);
+
+        const stale = getStreamView(guildId, start + VIEWER_STALE_MS + 1);
+        assert.deepEqual(stale.viewers, []);
     });
 });
